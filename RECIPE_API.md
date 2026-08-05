@@ -2,14 +2,9 @@
 
 Standalone API service for your normalized recipe dataset.
 
-## Why separate from your Home Assistant sidecar?
+## Standalone service
 
-Keep this service separate and call it from your sidecar:
-- avoids mixing recipe/search logic into HA weather/time endpoints
-- allows independent restart/deploy/versioning
-- easier to reuse from multiple local apps
-
-Your sidecar can proxy to this service if you want a single external API surface.
+This project runs as an independent Flask application with its own recipe pipeline, SQLite persistence, search, pairing, grocery-list, and assistant-configuration features. It can be used directly by an API client, GPT Action, or future local chatbot without requiring another application to host its core logic.
 
 ## Environment setup
 
@@ -94,7 +89,7 @@ The root, health, and OpenAPI routes are public. Other routes require authentica
 
 The API synchronizes the active NDJSON dataset into the local SQLite path configured by `RECIPE_DATABASE_PATH` or `--database`. Set `RECIPE_DATA_SOURCE=sqlite` to read recipe records through SQLite, use its FTS5 index to prefilter searches, and store grocery-list and custom-instruction state there while retaining the existing files as transition inputs, fallback, and exports.
 
-## Flask sidecar call example
+## Python client call example
 
 ```python
 import requests

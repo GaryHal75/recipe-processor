@@ -1,6 +1,6 @@
 # Recipe Processor
 
-Recipe Processor is a local recipe knowledge service for chatbot and home-automation integrations.
+Recipe Processor is a standalone local recipe knowledge and grocery-list application.
 
 It turns recipe documents into a searchable structured dataset, then exposes that dataset through a Flask API. The API supports recipe search, meal-component discovery, pairing suggestions, grocery-list workflows, dataset refreshes, and runtime custom instructions for a recipe assistant.
 
@@ -18,7 +18,7 @@ It turns recipe documents into a searchable structured dataset, then exposes tha
 - Synchronize the normalized dataset into a local SQLite database during the persistence migration.
 - Build an SQLite FTS5 search index while preserving the existing search ranking behavior.
 - Synchronize grocery lists, archives, and custom assistant instructions into SQLite during the migration.
-- Run locally, on a server, or as a backend for another chatbot or sidecar service.
+- Run locally or on a server as a self-contained API service for recipe and grocery workflows.
 
 ## How it works
 
@@ -37,7 +37,7 @@ recipe_pipeline.py
               ├── Search and recipe retrieval
               ├── Pairing recommendations
               ├── Grocery-list workflows
-              └── Chatbot integration
+              └── Assistant-ready API responses
 ```
 
 The ingestion pipeline can run once or in polling-watch mode. The API loads the generated NDJSON dataset into an in-memory search index and can refresh it after new recipes are ingested.
@@ -165,7 +165,7 @@ Each normalized recipe can include:
 - extracted components such as sauces, sides, slaws, and toppings
 - parser warnings when a source file needs review
 
-The generated dataset is designed to be useful both to the API and to an external chatbot that needs concise recipe summaries and structured actions.
+The generated dataset is designed to support concise recipe summaries, structured actions, and future conversational interfaces without requiring a separate application runtime.
 
 ## Configuration
 
