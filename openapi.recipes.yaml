@@ -7,6 +7,7 @@ servers:
   - url: https://your-public-host.example.com/api/recipes
     description: Replace with your own deployment URL.
 security:
+  - BearerAuth: []
   - ApiKeyAuth: []
 paths:
   /custom-instructions:
@@ -727,6 +728,10 @@ components:
         current:
           $ref: "#/components/schemas/GroceryListResponse"
   securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque token
     ApiKeyAuth:
       type: apiKey
       in: header

@@ -29,12 +29,18 @@ source .venv/bin/activate
 python services/recipe_api.py --host 0.0.0.0 --port 8787
 ```
 
-With API key protection:
+With bearer-token protection:
 
 ```bash
 source .venv/bin/activate
-export RECIPE_API_KEY="replace-with-local-secret"
+export RECIPE_API_BEARER_TOKEN="replace-with-generated-token"
 python services/recipe_api.py --host 0.0.0.0 --port 8787
+```
+
+Generate a token locally:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 ## Endpoints
@@ -66,9 +72,11 @@ Recipes now persist structured meal metadata from ingest:
 
 Recipe summaries now also include a derived or persisted `component_type`, and pairing endpoints use those roles plus cuisine/platform tags to suggest compatible combinations, treating sauces and side dishes as reusable building blocks when they fit the main dish.
 
-If API key is enabled, include header:
+If bearer authentication is enabled, include the header:
 
-`X-API-Key: <your_key>`
+`Authorization: Bearer <your_token>`
+
+The root, health, and OpenAPI routes are public. Other routes require authentication. The legacy `X-API-Key` header is also accepted when `RECIPE_API_KEY` is configured.
 
 ## Flask sidecar call example
 
@@ -76,7 +84,7 @@ If API key is enabled, include header:
 import requests
 
 RECIPE_API = "http://127.0.0.1:8787"
-HEADERS = {"X-API-Key": "replace-with-local-secret"}
+HEADERS = {"Authorization": "Bearer replace-with-generated-token"}
 
 def search_recipes(q: str):
     r = requests.post(f"{RECIPE_API}/search", json={"q": q, "limit": 5}, headers=HEADERS, timeout=10)
@@ -88,6 +96,6 @@ def search_recipes(q: str):
 
 ```bash
 curl http://127.0.0.1:8787/health
-curl -H "X-API-Key: replace-with-local-secret" "http://127.0.0.1:8787/recipes?limit=3&q=tacos"
-curl -H "X-API-Key: replace-with-local-secret" -X POST http://127.0.0.1:8787/search -H "Content-Type: application/json" -d '{"q":"harissa"}'
+curl -H "Authorization: Bearer replace-with-generated-token" "http://127.0.0.1:8787/recipes?limit=3&q=tacos"
+curl -H "Authorization: Bearer replace-with-generated-token" -X POST http://127.0.0.1:8787/search -H "Content-Type: application/json" -d '{"q":"harissa"}'
 ```

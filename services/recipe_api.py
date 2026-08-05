@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -27,7 +28,9 @@ DEFAULT_GROCERY_ARCHIVE_DIR = "structured/grocery_list_archive"
 DEFAULT_CUSTOM_INSTRUCTIONS_PATH = "structured/recipe_custom_instructions.md"
 DEFAULT_PORT = 8787
 API_KEY_ENV = "RECIPE_API_KEY"
+BEARER_TOKEN_ENV = "RECIPE_API_BEARER_TOKEN"
 HEADER_KEY = "X-API-Key"
+AUTHORIZATION_HEADER = "Authorization"
 OPENAPI_PATH = Path(__file__).resolve().parent.parent / "openapi.recipes.yaml"
 LOCAL_TIMEZONE = ZoneInfo(os.getenv("TZ", "America/New_York"))
 ROLE_KEYWORDS = {
@@ -993,6 +996,7 @@ def create_app(
     grocery_store: GroceryListStore,
     api_key: str | None,
     custom_instructions_path: Path,
+    bearer_token: str | None = None,
 ) -> Flask:
     app = Flask(__name__)
     instructions_lock = threading.Lock()
@@ -1019,14 +1023,22 @@ def create_app(
         return read_custom_instructions()
 
     @app.before_request
-    def enforce_api_key() -> None:
-        if not api_key:
+    def enforce_authentication() -> Any:
+        if not api_key and not bearer_token:
             return
         if request.path in {"/", "/health", "/openapi.yaml"}:
             return
-        supplied = request.headers.get(HEADER_KEY)
-        if supplied != api_key:
-            abort(401, description=f"Unauthorized. Provide {HEADER_KEY}.")
+        if bearer_token:
+            supplied_header = request.headers.get(AUTHORIZATION_HEADER, "")
+            scheme, _, supplied_token = supplied_header.partition(" ")
+            if scheme.lower() == "bearer" and supplied_token and hmac.compare_digest(supplied_token, bearer_token):
+                return
+        if api_key and hmac.compare_digest(request.headers.get(HEADER_KEY, ""), api_key):
+            return
+        response = jsonify({"error": "unauthorized", "message": "A valid bearer token is required."})
+        response.status_code = 401
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
 
     @app.get("/health")
     def health() -> Any:
@@ -1042,7 +1054,7 @@ def create_app(
                 "list_recipes": "/recipes?limit=25&offset=0",
                 "grocery_list": "/grocery-list",
                 "search": {"method": "POST", "path": "/search", "body_example": {"q": "harissa shrimp", "limit": 10}},
-                "notes": "Most routes require X-API-Key when API key auth is enabled.",
+                "notes": "Most routes require Authorization: Bearer <token> when bearer authentication is enabled.",
             }
         )
 
@@ -1288,7 +1300,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grocery-archive-dir", default=DEFAULT_GROCERY_ARCHIVE_DIR)
     p.add_argument("--custom-instructions", default=DEFAULT_CUSTOM_INSTRUCTIONS_PATH)
     p.add_argument("--pipeline-script", default="scripts/recipe_pipeline.py")
-    p.add_argument("--api-key", default=None, help=f"If omitted, reads {API_KEY_ENV}.")
+    p.add_argument("--api-key", default=None, help=f"Legacy compatibility option; if omitted, reads {API_KEY_ENV}.")
+    p.add_argument("--bearer-token", default=None, help=f"If omitted, reads {BEARER_TOKEN_ENV}.")
     return p.parse_args()
 
 
@@ -1331,6 +1344,7 @@ def app_from_env() -> Flask:
     custom_instructions = os.getenv("RECIPE_CUSTOM_INSTRUCTIONS_PATH", DEFAULT_CUSTOM_INSTRUCTIONS_PATH)
     pipeline_script = os.getenv("RECIPE_PIPELINE_SCRIPT", "scripts/recipe_pipeline.py")
     api_key = os.getenv(API_KEY_ENV)
+    bearer_token = os.getenv(BEARER_TOKEN_ENV)
     store, grocery_store = build_store(
         dataset=dataset,
         source=source,
@@ -1344,6 +1358,7 @@ def app_from_env() -> Flask:
         grocery_store=grocery_store,
         api_key=api_key,
         custom_instructions_path=(Path.cwd() / custom_instructions).expanduser().resolve(),
+        bearer_token=bearer_token,
     )
 
 
@@ -1358,11 +1373,13 @@ def main() -> int:
         grocery_archive_dir=args.grocery_archive_dir,
     )
     api_key = args.api_key or os.getenv(API_KEY_ENV)
+    bearer_token = args.bearer_token or os.getenv(BEARER_TOKEN_ENV)
     app = create_app(
         store=store,
         grocery_store=grocery_store,
         api_key=api_key,
         custom_instructions_path=(Path.cwd() / args.custom_instructions).expanduser().resolve(),
+        bearer_token=bearer_token,
     )
     app.run(host=args.host, port=args.port)
     return 0
