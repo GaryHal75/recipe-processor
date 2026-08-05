@@ -1128,6 +1128,50 @@ class GroceryListStore:
             "items": [summarize_grocery_item(item) for item in (payload.get("items") or [])],
         }
 
+    def restore_archive(self, archive_id: str) -> dict[str, Any]:
+        if not self.database or not self.use_database:
+            return {"ok": False, "reason": "sqlite_required"}
+        with self.lock:
+            if self.items:
+                return {"ok": False, "reason": "active_list_not_empty"}
+            payload = self.database.get_grocery_archive(archive_id)
+            if not payload:
+                return {"ok": False, "reason": "not_found"}
+            restored_items = []
+            by_normalized = {}
+            for row in payload.get("items") or []:
+                item_text = (row.get("item") or "").strip()
+                if not item_text:
+                    continue
+                normalized = row.get("normalized_item") or normalize_grocery_item(item_text)
+                item = {
+                    "id": row.get("id") or uuid.uuid4().hex,
+                    "item": item_text,
+                    "normalized_item": normalized,
+                    "added_at_utc": row.get("added_at_utc") or now_iso(),
+                    "source": row.get("source") or None,
+                    "recipe_id": row.get("recipe_id") or None,
+                    "recipe_title": row.get("recipe_title") or None,
+                    "quantity": row.get("quantity"),
+                    "unit": row.get("unit") or None,
+                    "category": row.get("category") or None,
+                    "purchased": bool(row.get("purchased", False)),
+                }
+                restored_items.append(item)
+                by_normalized[normalized] = item
+            self.items = sorted(restored_items, key=grocery_sort_key, reverse=True)
+            self.by_normalized = by_normalized
+            self.started_at_utc = payload.get("started_at_utc") or now_iso()
+            self.updated_at_utc = now_iso()
+            self.save()
+            self.record_event(
+                "list_restored",
+                {"item_count": len(self.items), "source_archive_id": archive_id},
+                archive_id=archive_id,
+                occurred_at_utc=self.updated_at_utc,
+            )
+            return {"ok": True, "archive_id": archive_id, **self.get_items()}
+
 
 def summarize_recipe(
     recipe: dict[str, Any],
@@ -1523,6 +1567,17 @@ def create_app(
             occurred_at_utc=deleted_at,
         )
         return jsonify({"ok": True, "archive_id": archive_id, "status": "deleted", "deleted_at_utc": deleted_at})
+
+    @app.post("/grocery-list/archives/<archive_id>/restore")
+    def restore_grocery_archive(archive_id: str) -> Any:
+        result = grocery_store.restore_archive(archive_id)
+        if result.get("reason") == "sqlite_required":
+            abort(409, description="Archive restore requires SQLite data source.")
+        if result.get("reason") == "active_list_not_empty":
+            abort(409, description="Active grocery list is not empty; archive or clear it before restoring.")
+        if result.get("reason") == "not_found":
+            abort(404, description=f"archive_id not found: {archive_id}")
+        return jsonify(result)
 
     @app.post("/grocery-list/archive")
     def archive_grocery_list() -> Any:

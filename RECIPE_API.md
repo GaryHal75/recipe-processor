@@ -64,6 +64,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 - `GET /grocery-list/archives`
 - `GET /grocery-list/archives/<archive_id>`
 - `DELETE /grocery-list/archives/<archive_id>` to soft-delete an archive while retaining it in SQLite
+- `POST /grocery-list/archives/<archive_id>/restore` to restore an archived list when the active cart is empty
 - `DELETE /grocery-list`
 
 The active grocery list includes `started_at_utc`, `started_local_date`, `started_local_day`, `age_days`, `stale_after_days`, and `is_stale`. The default stale threshold is 7 days and can be changed with `RECIPE_GROCERY_STALE_DAYS`. Clearing a non-empty list archives a `cleared` snapshot before resetting the active cart. SQLite-backed archives can be soft-deleted and retrieved explicitly with `?include_deleted=true`.
