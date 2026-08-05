@@ -8,7 +8,7 @@ The migration should improve queryability and update reliability without disrupt
 
 ## Current status
 
-Phase 1 and the initial recipe-read portion of Phases 2–4 are complete. The service can create a local SQLite database, import the current NDJSON dataset, preserve duplicate-ID behavior, report synchronization status, read through SQLite when `RECIPE_DATA_SOURCE=sqlite`, and use an SQLite FTS5 index to prefilter searches. NDJSON remains the transition input and fallback while database-backed behavior is validated.
+Phase 1, the initial recipe-read/search portion of Phases 2–4, and the first portion of Phase 5 are complete. The service can create a local SQLite database, import the current NDJSON dataset, preserve duplicate-ID behavior, report synchronization status, read through SQLite when `RECIPE_DATA_SOURCE=sqlite`, use an SQLite FTS5 index to prefilter searches, and synchronize grocery-list, archive, and custom-instruction state. NDJSON and the existing JSON/Markdown files remain transition inputs, fallbacks, and exports while database-backed behavior is validated.
 
 ## Design decision
 
@@ -90,7 +90,7 @@ The existing search behavior should remain the reference behavior during the fir
 
 Move mutable service state into SQLite after recipe reads are stable:
 
-- `grocery_items`
+- `grocery_state` (current grocery-list payload)
 - `grocery_archives`
 - `custom_instructions`
 - `ingestion_state`

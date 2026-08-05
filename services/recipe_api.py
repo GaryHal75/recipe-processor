@@ -769,6 +769,8 @@ class RecipeStore:
 class GroceryListStore:
     file_path: Path
     archive_dir: Path
+    database: RecipeDatabase | None = None
+    use_database: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
     items: list[dict[str, Any]] = None
     by_normalized: dict[str, dict[str, Any]] = None
@@ -782,7 +784,10 @@ class GroceryListStore:
 
     def load(self) -> None:
         payload: dict[str, Any] = {"items": [], "started_at_utc": None, "updated_at_utc": None}
-        if self.file_path.exists():
+        database_payload = self.database.load_grocery_state() if self.database and self.use_database else None
+        if database_payload is not None:
+            payload = database_payload
+        elif self.file_path.exists():
             try:
                 payload = json.loads(self.file_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
@@ -813,6 +818,8 @@ class GroceryListStore:
             self.by_normalized = by_normalized
             self.started_at_utc = payload.get("started_at_utc")
             self.updated_at_utc = payload.get("updated_at_utc") or now_iso()
+        if self.database and self.use_database and database_payload is None:
+            self.database.save_grocery_state(payload)
 
     def save(self) -> None:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -822,6 +829,8 @@ class GroceryListStore:
             "items": self.items,
         }
         self.file_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+        if self.database and self.use_database:
+            self.database.save_grocery_state(payload)
 
     def get_items(self) -> dict[str, Any]:
         with self.lock:
@@ -918,6 +927,8 @@ class GroceryListStore:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             archive_path = self.archive_dir / f"{archive_id}.json"
             archive_path.write_text(json.dumps(archive_payload, indent=2, ensure_ascii=True), encoding="utf-8")
+            if self.database and self.use_database:
+                self.database.save_grocery_archive(archive_payload)
 
             self.items = []
             self.by_normalized = {}
@@ -939,6 +950,20 @@ class GroceryListStore:
         }
 
     def list_archives(self) -> dict[str, Any]:
+        if self.database and self.use_database:
+            database_archives = self.database.list_grocery_archives()
+            if not database_archives:
+                self.archive_dir.mkdir(parents=True, exist_ok=True)
+                for path in self.archive_dir.glob("*.json"):
+                    try:
+                        payload = json.loads(path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("archive_id"):
+                        self.database.save_grocery_archive(payload)
+                database_archives = self.database.list_grocery_archives()
+            archives = [summarize_grocery_archive(payload) for payload in database_archives]
+            return {"count": len(archives), "items": archives}
         archives: list[dict[str, Any]] = []
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         for path in sorted(self.archive_dir.glob("*.json")):
@@ -951,6 +976,20 @@ class GroceryListStore:
         return {"count": len(archives), "items": archives}
 
     def get_archive(self, archive_id: str) -> dict[str, Any] | None:
+        if self.database and self.use_database:
+            payload = self.database.get_grocery_archive(archive_id)
+            if not payload:
+                return None
+            return {
+                "archive_id": payload.get("archive_id") or archive_id,
+                "name": payload.get("name"),
+                "started_at_utc": payload.get("started_at_utc"),
+                "started_local_date": payload.get("started_local_date"),
+                "started_local_day": payload.get("started_local_day"),
+                "archived_at_utc": payload.get("archived_at_utc"),
+                "item_count": len(payload.get("items") or []),
+                "items": [summarize_grocery_item(item) for item in (payload.get("items") or [])],
+            }
         path = self.archive_dir / f"{archive_id}.json"
         if not path.exists():
             return None
@@ -1054,26 +1093,45 @@ def create_app(
 ) -> Flask:
     app = Flask(__name__)
     instructions_lock = threading.Lock()
+    state_database = store.database if store.data_source == "sqlite" else None
 
     def read_custom_instructions() -> dict[str, Any]:
         with instructions_lock:
+            if state_database:
+                database_payload = state_database.load_custom_instructions()
+                if database_payload is not None:
+                    return database_payload
             if not custom_instructions_path.exists():
-                return {"instructions": "", "path": str(custom_instructions_path), "updated_at_utc": None}
+                payload = {"instructions": "", "path": str(custom_instructions_path), "updated_at_utc": None}
+                if state_database:
+                    state_database.save_custom_instructions(payload)
+                return payload
             body = custom_instructions_path.read_text(encoding="utf-8")
             updated_at = datetime.fromtimestamp(
                 custom_instructions_path.stat().st_mtime,
                 tz=UTC,
             ).isoformat().replace("+00:00", "Z")
-            return {
+            payload = {
                 "instructions": body,
                 "path": str(custom_instructions_path),
                 "updated_at_utc": updated_at,
             }
+            if state_database:
+                state_database.save_custom_instructions(payload)
+            return payload
 
     def write_custom_instructions(instructions: str) -> dict[str, Any]:
         with instructions_lock:
             custom_instructions_path.parent.mkdir(parents=True, exist_ok=True)
             custom_instructions_path.write_text(instructions, encoding="utf-8")
+            if state_database:
+                state_database.save_custom_instructions(
+                    {
+                        "instructions": instructions,
+                        "path": str(custom_instructions_path),
+                        "updated_at_utc": now_iso(),
+                    }
+                )
         return read_custom_instructions()
 
     @app.before_request
@@ -1391,7 +1449,12 @@ def build_store(
         database=database_store,
         data_source=data_source,
     )
-    grocery_store = GroceryListStore(file_path=grocery_list_path, archive_dir=grocery_archive_path)
+    grocery_store = GroceryListStore(
+        file_path=grocery_list_path,
+        archive_dir=grocery_archive_path,
+        database=database_store,
+        use_database=data_source == "sqlite",
+    )
     store.load()
     return store, grocery_store
 

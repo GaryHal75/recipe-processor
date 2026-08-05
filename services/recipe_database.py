@@ -49,6 +49,22 @@ CREATE TABLE IF NOT EXISTS database_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS grocery_state (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS grocery_archives (
+    archive_id TEXT PRIMARY KEY,
+    archive_json TEXT NOT NULL,
+    archived_at_utc TEXT
+);
+
+CREATE TABLE IF NOT EXISTS custom_instructions (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL
+);
 """
 
 
@@ -217,6 +233,59 @@ class RecipeDatabase:
         except sqlite3.OperationalError:
             return None
         return {str(row["recipe_id"]) for row in rows}
+
+    def load_grocery_state(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM grocery_state WHERE key = 'current'"
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_grocery_state(self, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO grocery_state(key, value_json) VALUES('current', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+                (_json(payload),),
+            )
+
+    def save_grocery_archive(self, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO grocery_archives(archive_id, archive_json, archived_at_utc) VALUES (?, ?, ?) "
+                "ON CONFLICT(archive_id) DO UPDATE SET archive_json=excluded.archive_json, archived_at_utc=excluded.archived_at_utc",
+                (payload.get("archive_id"), _json(payload), payload.get("archived_at_utc")),
+            )
+
+    def list_grocery_archives(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT archive_json FROM grocery_archives ORDER BY archived_at_utc DESC, archive_id DESC"
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def get_grocery_archive(self, archive_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT archive_json FROM grocery_archives WHERE archive_id = ?",
+                (archive_id,),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def load_custom_instructions(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM custom_instructions WHERE key = 'current'"
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_custom_instructions(self, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO custom_instructions(key, value_json) VALUES('current', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+                (_json(payload),),
+            )
 
 
 def main() -> int:

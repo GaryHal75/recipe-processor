@@ -16,6 +16,7 @@ It turns recipe documents into a searchable structured dataset, then exposes tha
 - Store custom recipe-assistant instructions independently from source code.
 - Synchronize the normalized dataset into a local SQLite database during the persistence migration.
 - Build an SQLite FTS5 search index while preserving the existing search ranking behavior.
+- Synchronize grocery lists, archives, and custom assistant instructions into SQLite during the migration.
 - Run locally, on a server, or as a backend for another chatbot or sidecar service.
 
 ## How it works
@@ -169,7 +170,7 @@ The generated dataset is designed to be useful both to the API and to an externa
 
 The API can be configured with command-line arguments or environment variables. `.env.example` provides a client configuration template.
 
-The database path is configured with `RECIPE_DATABASE_PATH` or `--database`. The default `RECIPE_DATA_SOURCE=ndjson` keeps NDJSON as the serving source while synchronizing SQLite. Set `RECIPE_DATA_SOURCE=sqlite` to exercise database-backed reads and SQLite FTS search; the current transition still refreshes SQLite from the NDJSON export before loading it.
+The database path is configured with `RECIPE_DATABASE_PATH` or `--database`. The default `RECIPE_DATA_SOURCE=ndjson` keeps the file-backed stores as the serving source while synchronizing SQLite. Set `RECIPE_DATA_SOURCE=sqlite` to use database-backed recipe reads, search, grocery lists, archives, and custom instructions; the transition continues writing the existing files for fallback and export.
 
 To import an existing NDJSON export directly:
 

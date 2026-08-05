@@ -78,7 +78,7 @@ If bearer authentication is enabled, include the header:
 
 The root, health, and OpenAPI routes are public. Other routes require authentication. The legacy `X-API-Key` header is also accepted when `RECIPE_API_KEY` is configured.
 
-The API synchronizes the active NDJSON dataset into the local SQLite path configured by `RECIPE_DATABASE_PATH` or `--database`. Set `RECIPE_DATA_SOURCE=sqlite` to read recipe records through SQLite and use its FTS5 index to prefilter searches while retaining NDJSON as the transition input and fallback.
+The API synchronizes the active NDJSON dataset into the local SQLite path configured by `RECIPE_DATABASE_PATH` or `--database`. Set `RECIPE_DATA_SOURCE=sqlite` to read recipe records through SQLite, use its FTS5 index to prefilter searches, and store grocery-list and custom-instruction state there while retaining the existing files as transition inputs, fallback, and exports.
 
 ## Flask sidecar call example
 

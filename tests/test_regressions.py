@@ -139,3 +139,38 @@ class DatabaseMigrationTests(unittest.TestCase):
             )
             self.assertEqual(store.data_source, "sqlite")
             self.assertEqual(store.list_recipes(None, 10, 0)[0]["recipe_id"], "sqlite_recipe")
+            app = create_app(
+                store=store,
+                grocery_store=_,
+                api_key=None,
+                custom_instructions_path=root / "instructions.md",
+                bearer_token="test-token",
+            )
+            client = app.test_client()
+            auth = {"Authorization": "Bearer test-token"}
+            self.assertEqual(
+                client.post("/grocery-list/append", json={"items": ["onion"]}, headers=auth).status_code,
+                200,
+            )
+            self.assertEqual(client.get("/grocery-list", headers=auth).get_json()["count"], 1)
+            self.assertEqual(
+                client.post(
+                    "/grocery-list/archive",
+                    json={"name": "Test archive"},
+                    headers=auth,
+                ).status_code,
+                200,
+            )
+            self.assertEqual(client.get("/grocery-list/archives", headers=auth).get_json()["count"], 1)
+            self.assertEqual(
+                client.put(
+                    "/custom-instructions",
+                    json={"instructions": "Use concise guidance."},
+                    headers=auth,
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                client.get("/custom-instructions", headers=auth).get_json()["instructions"],
+                "Use concise guidance.",
+            )
