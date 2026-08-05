@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recipes (
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS recipes (
     profile_json TEXT NOT NULL,
     recipe_json TEXT NOT NULL,
     source_relative_path TEXT,
+    source_mtime_utc TEXT,
     ingested_at_utc TEXT,
     updated_at_utc TEXT NOT NULL
 );
@@ -89,6 +90,9 @@ class RecipeDatabase:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(recipes)")}
+            if "source_mtime_utc" not in columns:
+                connection.execute("ALTER TABLE recipes ADD COLUMN source_mtime_utc TEXT")
             connection.execute(
                 "INSERT INTO database_meta(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -119,8 +123,8 @@ class RecipeDatabase:
                     """
                     INSERT INTO recipes(
                         recipe_id, title, component_type, profile_json, recipe_json,
-                        source_relative_path, ingested_at_utc, updated_at_utc
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        source_relative_path, source_mtime_utc, ingested_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         recipe_id,
@@ -129,6 +133,7 @@ class RecipeDatabase:
                         _json(profile),
                         _json(recipe),
                         source.get("relative_path"),
+                        source.get("mtime_utc"),
                         recipe.get("ingested_at_utc"),
                         updated_at,
                     ),
@@ -194,7 +199,7 @@ class RecipeDatabase:
     def load_recipes(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT recipe_json FROM recipes ORDER BY rowid"
+                "SELECT recipe_json FROM recipes ORDER BY source_mtime_utc DESC, ingested_at_utc DESC, recipe_id DESC"
             ).fetchall()
         return [json.loads(row["recipe_json"]) for row in rows]
 

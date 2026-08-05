@@ -86,13 +86,24 @@ class DatabaseMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = RecipeDatabase(Path(temp_dir) / "recipes.db")
             first = [
-                {"recipe_id": "one", "title": "One", "components": [{"title": "Sauce"}]},
-                {"recipe_id": "two", "title": "Two", "components": []},
+                {
+                    "recipe_id": "one",
+                    "title": "One",
+                    "source": {"mtime_utc": "2026-08-02T00:00:00Z"},
+                    "components": [{"title": "Sauce"}],
+                },
+                {
+                    "recipe_id": "two",
+                    "title": "Two",
+                    "source": {"mtime_utc": "2026-08-01T00:00:00Z"},
+                    "components": [],
+                },
             ]
             self.assertEqual(database.replace_from_recipes(first), 2)
             self.assertEqual(database.stats()["recipes"], 2)
             self.assertEqual(database.stats()["components"], 1)
             self.assertEqual(database.search_recipe_ids(["sauce"]), {"one"})
+            self.assertEqual(database.load_recipes()[0]["recipe_id"], "one")
 
             self.assertEqual(database.replace_from_recipes(first), 2)
             self.assertEqual(database.stats()["recipes"], 2)

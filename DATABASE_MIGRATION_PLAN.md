@@ -39,6 +39,7 @@ Suggested fields:
 - `total_time_text`
 - `profile_json`
 - `source_json`
+- `source_mtime_utc` — source file modification time used for recency ordering
 - `metadata_json`
 - `ingested_at_utc`
 - `updated_at_utc`
