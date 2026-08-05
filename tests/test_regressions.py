@@ -184,6 +184,17 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ).status_code,
                 200,
             )
+            _, second_grocery_store = build_store(
+                dataset=str(ndjson),
+                source=str(source),
+                out=str(structured),
+                pipeline_script=str(Path.cwd() / "scripts/recipe_pipeline.py"),
+                grocery_list=str(root / "grocery.json"),
+                grocery_archive_dir=str(root / "archives"),
+                database=str(database_path),
+                data_source="sqlite",
+            )
+            self.assertEqual(second_grocery_store.get_items()["count"], 0)
             archives = client.get("/grocery-list/archives", headers=auth).get_json()
             self.assertEqual(archives["count"], 1)
             archive_id = archives["items"][0]["archive_id"]

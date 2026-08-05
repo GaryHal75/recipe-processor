@@ -869,6 +869,8 @@ class GroceryListStore:
             self.database.save_grocery_state(payload)
 
     def get_items(self) -> dict[str, Any]:
+        if self.database and self.use_database:
+            self.load()
         with self.lock:
             started_local_date, started_local_day = local_date_parts(self.started_at_utc)
             age_days = grocery_age_days(self.started_at_utc)
@@ -886,6 +888,8 @@ class GroceryListStore:
 
     def update_item(self, item_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
+            if self.database and self.use_database:
+                self.load()
             item = next((row for row in self.items if row.get("id") == item_id), None)
             if not item:
                 return {"ok": False, "found": False}
@@ -913,6 +917,8 @@ class GroceryListStore:
 
     def remove_item(self, item_id: str) -> dict[str, Any]:
         with self.lock:
+            if self.database and self.use_database:
+                self.load()
             item = next((row for row in self.items if row.get("id") == item_id), None)
             if not item:
                 return {"ok": False, "found": False}
@@ -935,6 +941,8 @@ class GroceryListStore:
         duplicates = 0
         added_items: list[dict[str, Any]] = []
         with self.lock:
+            if self.database and self.use_database:
+                self.load()
             if self.started_at_utc is None:
                 self.started_at_utc = now_iso()
             for raw in items:
@@ -989,6 +997,8 @@ class GroceryListStore:
 
     def clear(self) -> dict[str, Any]:
         with self.lock:
+            if self.database and self.use_database:
+                self.load()
             archived = None
             if self.items:
                 archived = self.archive_current(name="Cleared grocery list", status="cleared")["archived"]
@@ -1015,6 +1025,8 @@ class GroceryListStore:
 
     def archive_current(self, name: str | None = None, status: str = "archived") -> dict[str, Any]:
         with self.lock:
+            if self.database and self.use_database:
+                self.load()
             archive_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
             archive_name = " ".join((name or "").strip().split()) or None
             archived_at = now_iso()
@@ -1132,6 +1144,7 @@ class GroceryListStore:
         if not self.database or not self.use_database:
             return {"ok": False, "reason": "sqlite_required"}
         with self.lock:
+            self.load()
             if self.items:
                 return {"ok": False, "reason": "active_list_not_empty"}
             payload = self.database.get_grocery_archive(archive_id)
