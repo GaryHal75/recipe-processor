@@ -25,7 +25,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 
-SUPPORTED_EXTENSIONS = {".docx", ".txt", ".gdoc"}
+SUPPORTED_EXTENSIONS = {".docx", ".txt", ".md", ".gdoc"}
 IGNORE_PREFIXES = (".", "~")
 SKIP_FILE_NAMES = {
     "AGENTS.md",
@@ -37,7 +37,7 @@ SKIP_FILE_NAMES = {
     "requirements.txt",
 }
 SKIP_SUFFIXES = {".py", ".yaml", ".yml", ".json", ".ndjson", ".sh"}
-PARSER_VERSION = 6
+PARSER_VERSION = 7
 ROLE_KEYWORDS = {
     "main": {
         "chicken",
@@ -489,7 +489,7 @@ def split_sections(text: str) -> ParseResult:
                 total_time = m.group(1).strip()
 
     idx_ing = find_section_index(lines, ["ingredients", "for the filling", "for the chicken"])
-    idx_instr = find_section_index(lines, ["instructions", "step-by-step", "method", "directions"])
+    idx_instr = find_section_index(lines, ["instructions", "steps", "step-by-step", "method", "directions"])
 
     ingredients: list[str] = []
     steps: list[str] = []
@@ -540,7 +540,7 @@ def normalize_list_items(lines: list[str]) -> list[str]:
     items: list[str] = []
     for ln in lines:
         low = ln.lower()
-        if any(k in low for k in ("instructions", "method", "directions")):
+        if any(k in low for k in ("instructions", "steps", "method", "directions")):
             break
         ln = clean_prefix(ln)
         if ln:

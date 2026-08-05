@@ -140,6 +140,16 @@ def now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def bounded_int(value: Any, name: str, default: int, minimum: int, maximum: int) -> int:
+    if value is None:
+        value = default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        abort(400, description=f"Parameter '{name}' must be an integer.")
+    return min(max(parsed, minimum), maximum)
+
+
 def normalize_search_text(text: str) -> str:
     text = text.lower()
     text = re.sub(r"([0-9])([a-z])", r"\1 \2", text)
@@ -1080,8 +1090,8 @@ def create_app(
     @app.get("/recipes")
     def list_recipes() -> Any:
         q = (request.args.get("q") or "").strip() or None
-        limit = min(max(int(request.args.get("limit", 25)), 1), 200)
-        offset = max(int(request.args.get("offset", 0)), 0)
+        limit = bounded_int(request.args.get("limit"), "limit", 25, 1, 200)
+        offset = bounded_int(request.args.get("offset"), "offset", 0, 0, 10**9)
         rows = store.list_recipes(q=q, limit=limit, offset=offset)
         return jsonify({"count": len(rows), "items": rows})
 
@@ -1102,10 +1112,10 @@ def create_app(
 
     @app.get("/recipes/<recipe_id>/pairings")
     def get_recipe_pairings(recipe_id: str) -> Any:
-        side_limit = min(max(int(request.args.get("side_limit", 5)), 1), 25)
-        sauce_limit = min(max(int(request.args.get("sauce_limit", 5)), 1), 25)
-        utility_limit = min(max(int(request.args.get("utility_limit", 5)), 1), 25)
-        combo_limit = min(max(int(request.args.get("combo_limit", 8)), 1), 30)
+        side_limit = bounded_int(request.args.get("side_limit"), "side_limit", 5, 1, 25)
+        sauce_limit = bounded_int(request.args.get("sauce_limit"), "sauce_limit", 5, 1, 25)
+        utility_limit = bounded_int(request.args.get("utility_limit"), "utility_limit", 5, 1, 25)
+        combo_limit = bounded_int(request.args.get("combo_limit"), "combo_limit", 8, 1, 30)
         payload = store.generate_pairings(
             recipe_id,
             side_limit=side_limit,
@@ -1120,11 +1130,11 @@ def create_app(
     @app.get("/pairings")
     def list_pairings() -> Any:
         recipe_id = (request.args.get("recipe_id") or "").strip()
-        main_limit = min(max(int(request.args.get("limit", 10)), 1), 50)
-        side_limit = min(max(int(request.args.get("side_limit", 3)), 1), 10)
-        sauce_limit = min(max(int(request.args.get("sauce_limit", 3)), 1), 10)
-        utility_limit = min(max(int(request.args.get("utility_limit", 2)), 1), 10)
-        combo_limit = min(max(int(request.args.get("combo_limit", 4)), 1), 12)
+        main_limit = bounded_int(request.args.get("limit"), "limit", 10, 1, 50)
+        side_limit = bounded_int(request.args.get("side_limit"), "side_limit", 3, 1, 10)
+        sauce_limit = bounded_int(request.args.get("sauce_limit"), "sauce_limit", 3, 1, 10)
+        utility_limit = bounded_int(request.args.get("utility_limit"), "utility_limit", 2, 1, 10)
+        combo_limit = bounded_int(request.args.get("combo_limit"), "combo_limit", 4, 1, 12)
 
         if recipe_id:
             payload = store.generate_pairings(
@@ -1165,7 +1175,7 @@ def create_app(
     def list_components() -> Any:
         component_type = (request.args.get("component_type") or "").strip().lower() or None
         recipe_id = (request.args.get("recipe_id") or "").strip() or None
-        limit = min(max(int(request.args.get("limit", 100)), 1), 500)
+        limit = bounded_int(request.args.get("limit"), "limit", 100, 1, 500)
 
         if recipe_id:
             recipe = store.get_recipe(recipe_id)
@@ -1192,7 +1202,7 @@ def create_app(
         q = (body.get("q") or body.get("query") or "").strip()
         if not q:
             abort(400, description="Request JSON must include non-empty 'q'.")
-        limit = min(max(int(body.get("limit", 10)), 1), 100)
+        limit = bounded_int(body.get("limit"), "limit", 10, 1, 100)
         require_all_terms = bool(body.get("require_all_terms", False))
         expand_terms = bool(body.get("expand_terms", True))
         rows = store.search(
