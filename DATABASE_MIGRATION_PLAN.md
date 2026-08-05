@@ -10,6 +10,8 @@ The migration should improve queryability and update reliability without disrupt
 
 Phase 1, the initial recipe-read/search portion of Phases 2–4, and the first portion of Phase 5 are complete. The service can create a local SQLite database, import the current NDJSON dataset, preserve duplicate-ID behavior, report synchronization status, read through SQLite when `RECIPE_DATA_SOURCE=sqlite`, use an SQLite FTS5 index to prefilter searches, and synchronize grocery-list, archive, and custom-instruction state. NDJSON and the existing JSON/Markdown files remain transition inputs, fallbacks, and exports while database-backed behavior is validated.
 
+The migration now also supports consistent SQLite backups through the database module. SQLite remains the serving source in the local deployment, while NDJSON and the legacy state files remain available as transition exports and recovery inputs.
+
 ## Design decision
 
 Use SQLite for the first database implementation.
@@ -177,6 +179,7 @@ Success criteria:
 ## Backup and recovery
 
 - Back up `structured/recipes.db` before schema migrations.
+- Use `python -m services.recipe_database --database ... --backup ...` for a consistent SQLite backup.
 - Keep NDJSON exports as a portable backup format.
 - Use SQLite transactions for imports and mutable-state updates.
 - Prefer a new database migration over destructive in-place changes.

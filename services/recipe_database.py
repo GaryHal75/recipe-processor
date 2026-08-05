@@ -118,6 +118,13 @@ class RecipeDatabase:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    def backup_to(self, destination: Path) -> Path:
+        destination = destination.expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as source, sqlite3.connect(destination) as target:
+            source.backup(target)
+        return destination
+
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
@@ -379,13 +386,21 @@ class RecipeDatabase:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import recipe NDJSON into SQLite.")
-    parser.add_argument("--ndjson", required=True, help="Path to recipes.ndjson.")
+    parser.add_argument("--ndjson", help="Path to recipes.ndjson.")
     parser.add_argument("--database", required=True, help="Path to the SQLite database.")
+    parser.add_argument("--backup", help="Write a consistent SQLite backup to this path.")
     args = parser.parse_args()
 
+    if not args.ndjson and not args.backup:
+        parser.error("provide --ndjson to import or --backup to create a backup")
+
     database = RecipeDatabase(Path(args.database))
-    count = database.replace_from_ndjson(Path(args.ndjson))
-    print(json.dumps({"ok": True, "imported": count, **database.stats()}))
+    result: dict[str, Any] = {"ok": True}
+    if args.ndjson:
+        result["imported"] = database.replace_from_ndjson(Path(args.ndjson))
+    if args.backup:
+        result["backup_path"] = str(database.backup_to(Path(args.backup)))
+    print(json.dumps({**result, **database.stats()}))
     return 0
 
 

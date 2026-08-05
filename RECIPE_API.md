@@ -71,6 +71,14 @@ The active grocery list includes `started_at_utc`, `started_local_date`, `starte
 
 Recipe-based grocery-list append requests validate every requested recipe before changing the cart. Append responses include `stale_before_append` plus the existing cart's creation date and weekday, allowing a chatbot to warn before merging new ingredients into an old list. SQLite-backed deployments also retain grocery events for future usage, purchasing, and inventory analysis.
 
+Create a consistent SQLite backup with:
+
+```bash
+python -m services.recipe_database \
+  --database structured/recipes.db \
+  --backup backups/recipes-$(date -u +%Y%m%dT%H%M%SZ).db
+```
+
 Recipes now persist structured meal metadata from ingest:
 - top-level `profile`
 - top-level `component_type`

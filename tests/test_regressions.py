@@ -101,6 +101,11 @@ class DatabaseMigrationTests(unittest.TestCase):
             ]
             self.assertEqual(database.replace_from_recipes(first), 2)
             self.assertEqual(database.stats()["recipes"], 2)
+            backup_path = Path(temp_dir) / "backup" / "recipes.db"
+            database.backup_to(backup_path)
+            backup = RecipeDatabase(backup_path)
+            self.assertEqual(backup.stats()["recipes"], 2)
+            self.assertEqual(backup.stats()["components"], 1)
             self.assertEqual(database.stats()["components"], 1)
             self.assertEqual(database.search_recipe_ids(["sauce"]), {"one"})
             self.assertEqual(database.load_recipes()[0]["recipe_id"], "one")
