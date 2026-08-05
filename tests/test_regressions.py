@@ -155,6 +155,18 @@ class DatabaseMigrationTests(unittest.TestCase):
             grocery = client.get("/grocery-list", headers=auth).get_json()
             self.assertEqual(grocery["count"], 1)
             self.assertIn("is_stale", grocery)
+            self.assertFalse(
+                client.post("/grocery-list/append", json={"items": ["onion"]}, headers=auth)
+                .get_json()["stale_before_append"]
+            )
+            old_payload = database.load_grocery_state()
+            old_payload["started_at_utc"] = "2026-07-22T12:00:00Z"
+            database.save_grocery_state(old_payload)
+            stale_append = client.post("/grocery-list/append", json={"items": ["onion"]}, headers=auth)
+            self.assertEqual(stale_append.status_code, 200)
+            self.assertTrue(stale_append.get_json()["stale_before_append"])
+            self.assertEqual(stale_append.get_json()["existing_cart_started_local_date"], "2026-07-22")
+            self.assertEqual(stale_append.get_json()["existing_cart_started_local_day"], "Wednesday")
             rejected = client.post(
                 "/grocery-list/append",
                 json={"items": ["milk"], "recipe_ids": ["missing-recipe"]},

@@ -69,7 +69,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 The active grocery list includes `started_at_utc`, `started_local_date`, `started_local_day`, `age_days`, `stale_after_days`, and `is_stale`. The default stale threshold is 7 days and can be changed with `RECIPE_GROCERY_STALE_DAYS`. Clearing a non-empty list archives a `cleared` snapshot before resetting the active cart. SQLite-backed archives can be soft-deleted and retrieved explicitly with `?include_deleted=true`.
 
-Recipe-based grocery-list append requests validate every requested recipe before changing the cart. SQLite-backed deployments also retain grocery events for future usage, purchasing, and inventory analysis.
+Recipe-based grocery-list append requests validate every requested recipe before changing the cart. Append responses include `stale_before_append` plus the existing cart's creation date and weekday, allowing a chatbot to warn before merging new ingredients into an old list. SQLite-backed deployments also retain grocery events for future usage, purchasing, and inventory analysis.
 
 Recipes now persist structured meal metadata from ingest:
 - top-level `profile`

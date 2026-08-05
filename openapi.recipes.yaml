@@ -770,6 +770,18 @@ components:
               type: integer
             duplicates:
               type: integer
+            stale_before_append:
+              type: boolean
+            existing_cart_started_at_utc:
+              type: string
+              format: date-time
+              nullable: true
+            existing_cart_started_local_date:
+              type: string
+              nullable: true
+            existing_cart_started_local_day:
+              type: string
+              nullable: true
     GroceryItemUpdateRequest:
       type: object
       properties:

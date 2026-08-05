@@ -1609,6 +1609,8 @@ def create_app(
         if not freeform_items and not recipe_ids:
             abort(400, description="Request JSON must include non-empty 'items' or 'recipe_ids'.")
 
+        previous_snapshot = grocery_store.get_items()
+
         recipes = []
         for recipe_id in recipe_ids:
             if recipe_id in skip_recipe_ids:
@@ -1637,7 +1639,18 @@ def create_app(
             duplicates += result["duplicates"]
 
         snapshot = grocery_store.get_items()
-        return jsonify({"ok": True, "added": added, "duplicates": duplicates, **snapshot})
+        return jsonify(
+            {
+                "ok": True,
+                "added": added,
+                "duplicates": duplicates,
+                "stale_before_append": previous_snapshot["is_stale"],
+                "existing_cart_started_at_utc": previous_snapshot["started_at_utc"],
+                "existing_cart_started_local_date": previous_snapshot["started_local_date"],
+                "existing_cart_started_local_day": previous_snapshot["started_local_day"],
+                **snapshot,
+            }
+        )
 
     return app
 
