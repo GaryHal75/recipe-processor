@@ -226,6 +226,49 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GroceryListResponse"
+  /grocery-list/items/{item_id}:
+    patch:
+      operationId: updateGroceryItem
+      summary: Edit an item on the active grocery list
+      parameters:
+        - in: path
+          name: item_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroceryItemUpdateRequest"
+      responses:
+        "200":
+          description: Grocery item updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryItemUpdateResponse"
+        "404":
+          description: Item not found
+    delete:
+      operationId: removeGroceryItem
+      summary: Remove an item from the active grocery list
+      parameters:
+        - in: path
+          name: item_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Grocery item removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryListResponse"
+        "404":
+          description: Item not found
     delete:
       operationId: clearGroceryList
       summary: Clear the active grocery list
@@ -298,6 +341,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GroceryArchiveDetail"
+        "404":
+          description: Archive not found
+    delete:
+      operationId: softDeleteGroceryArchive
+      summary: Soft-delete an archived grocery list
+      parameters:
+        - in: path
+          name: archive_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Archive marked deleted
         "404":
           description: Archive not found
 components:
@@ -619,6 +676,20 @@ components:
         recipe_title:
           type: string
           nullable: true
+        quantity:
+          nullable: true
+        unit:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        purchased:
+          type: boolean
+        updated_at_utc:
+          type: string
+          format: date-time
+          nullable: true
     GroceryListResponse:
       type: object
       properties:
@@ -638,6 +709,13 @@ components:
           type: string
           format: date-time
           nullable: true
+        age_days:
+          type: integer
+          nullable: true
+        stale_after_days:
+          type: integer
+        is_stale:
+          type: boolean
         items:
           type: array
           items:
@@ -671,6 +749,33 @@ components:
               type: integer
             duplicates:
               type: integer
+    GroceryItemUpdateRequest:
+      type: object
+      properties:
+        item:
+          type: string
+        quantity:
+          nullable: true
+        unit:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        purchased:
+          type: boolean
+      additionalProperties: false
+    GroceryItemUpdateResponse:
+      allOf:
+        - $ref: "#/components/schemas/GroceryListResponse"
+        - type: object
+          properties:
+            ok:
+              type: boolean
+            found:
+              type: boolean
+            item:
+              $ref: "#/components/schemas/GroceryListItem"
     GroceryArchiveRequest:
       type: object
       properties:
@@ -700,6 +805,12 @@ components:
           format: date-time
         item_count:
           type: integer
+        status:
+          type: string
+        deleted_at_utc:
+          type: string
+          format: date-time
+          nullable: true
     GroceryArchiveDetail:
       allOf:
         - $ref: "#/components/schemas/GroceryArchiveSummary"

@@ -152,7 +152,23 @@ class DatabaseMigrationTests(unittest.TestCase):
                 client.post("/grocery-list/append", json={"items": ["onion"]}, headers=auth).status_code,
                 200,
             )
-            self.assertEqual(client.get("/grocery-list", headers=auth).get_json()["count"], 1)
+            grocery = client.get("/grocery-list", headers=auth).get_json()
+            self.assertEqual(grocery["count"], 1)
+            self.assertIn("is_stale", grocery)
+            item_id = grocery["items"][0]["id"]
+            updated = client.patch(
+                f"/grocery-list/items/{item_id}",
+                json={"quantity": 2, "unit": "lb", "purchased": True},
+                headers=auth,
+            )
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(updated.get_json()["item"]["quantity"], 2)
+            self.assertEqual(client.delete(f"/grocery-list/items/{item_id}", headers=auth).status_code, 200)
+            self.assertEqual(client.get("/grocery-list", headers=auth).get_json()["count"], 0)
+            self.assertEqual(
+                client.post("/grocery-list/append", json={"items": ["onion"]}, headers=auth).status_code,
+                200,
+            )
             self.assertEqual(
                 client.post(
                     "/grocery-list/archive",
@@ -161,7 +177,17 @@ class DatabaseMigrationTests(unittest.TestCase):
                 ).status_code,
                 200,
             )
-            self.assertEqual(client.get("/grocery-list/archives", headers=auth).get_json()["count"], 1)
+            archives = client.get("/grocery-list/archives", headers=auth).get_json()
+            self.assertEqual(archives["count"], 1)
+            archive_id = archives["items"][0]["archive_id"]
+            self.assertEqual(client.delete(f"/grocery-list/archives/{archive_id}", headers=auth).status_code, 200)
+            self.assertEqual(client.get("/grocery-list/archives", headers=auth).get_json()["count"], 0)
+            deleted = client.get(
+                f"/grocery-list/archives/{archive_id}?include_deleted=true",
+                headers=auth,
+            )
+            self.assertEqual(deleted.status_code, 200)
+            self.assertEqual(deleted.get_json()["status"], "deleted")
             self.assertEqual(
                 client.put(
                     "/custom-instructions",

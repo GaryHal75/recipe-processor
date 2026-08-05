@@ -57,13 +57,16 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 - `POST /reload` (reloads `structured/recipes.ndjson`)
 - `POST /ingest` (runs `scripts/recipe_pipeline.py`, then reloads)
 - `GET /grocery-list`
+- `PATCH /grocery-list/items/<item_id>` to edit an item
+- `DELETE /grocery-list/items/<item_id>` to remove an item from the active list
 - `POST /grocery-list/append` with JSON body like `{"items":["milk","yellow onion"],"recipe_ids":["shrimp_roasted_poblano_cream_pasta"],"skip_recipe_ids":["hello_fresh_recipe_id"],"source":"chat"}`
 - `POST /grocery-list/archive` with optional JSON body like `{"name":"Trader Joe's run"}`
 - `GET /grocery-list/archives`
 - `GET /grocery-list/archives/<archive_id>`
+- `DELETE /grocery-list/archives/<archive_id>` to soft-delete an archive while retaining it in SQLite
 - `DELETE /grocery-list`
 
-The active grocery list now includes `started_at_utc`, `started_local_date`, and `started_local_day` so chat can decide whether the current list is stale and should be archived before starting a new one.
+The active grocery list includes `started_at_utc`, `started_local_date`, `started_local_day`, `age_days`, `stale_after_days`, and `is_stale`. The default stale threshold is 7 days and can be changed with `RECIPE_GROCERY_STALE_DAYS`. Clearing a non-empty list archives a `cleared` snapshot before resetting the active cart. SQLite-backed archives can be soft-deleted and retrieved explicitly with `?include_deleted=true`.
 
 Recipes now persist structured meal metadata from ingest:
 - top-level `profile`

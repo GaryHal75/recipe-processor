@@ -12,6 +12,7 @@ It turns recipe documents into a searchable structured dataset, then exposes tha
 - Search recipes with normalized terms, phrase matching, and related-term expansion.
 - Suggest compatible components and complete-meal pairings.
 - Maintain a persistent grocery list with append, archive, and retrieval operations.
+- Edit or remove individual grocery items, detect stale carts, and retain cleared history in SQLite.
 - Reload the dataset or trigger ingestion through the API.
 - Store custom recipe-assistant instructions independently from source code.
 - Synchronize the normalized dataset into a local SQLite database during the persistence migration.
@@ -170,7 +171,7 @@ The generated dataset is designed to be useful both to the API and to an externa
 
 The API can be configured with command-line arguments or environment variables. `.env.example` provides a client configuration template.
 
-The database path is configured with `RECIPE_DATABASE_PATH` or `--database`. The default `RECIPE_DATA_SOURCE=ndjson` keeps the file-backed stores as the serving source while synchronizing SQLite. Set `RECIPE_DATA_SOURCE=sqlite` to use database-backed recipe reads, search, grocery lists, archives, and custom instructions; the transition continues writing the existing files for fallback and export.
+The database path is configured with `RECIPE_DATABASE_PATH` or `--database`. The default `RECIPE_DATA_SOURCE=ndjson` keeps the file-backed stores as the serving source while synchronizing SQLite. Set `RECIPE_DATA_SOURCE=sqlite` to use database-backed recipe reads, search, grocery lists, archives, and custom instructions; the transition continues writing the existing files for fallback and export. Grocery freshness defaults to 7 days and can be changed with `RECIPE_GROCERY_STALE_DAYS`.
 
 To import an existing NDJSON export directly:
 

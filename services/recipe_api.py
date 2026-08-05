@@ -33,6 +33,7 @@ DEFAULT_GROCERY_ARCHIVE_DIR = "structured/grocery_list_archive"
 DEFAULT_CUSTOM_INSTRUCTIONS_PATH = "structured/recipe_custom_instructions.md"
 DEFAULT_DATABASE = "structured/recipes.db"
 DEFAULT_PORT = 8787
+DEFAULT_GROCERY_STALE_DAYS = 7
 API_KEY_ENV = "RECIPE_API_KEY"
 BEARER_TOKEN_ENV = "RECIPE_API_BEARER_TOKEN"
 HEADER_KEY = "X-API-Key"
@@ -427,6 +428,18 @@ def archive_sort_key(archive: dict[str, Any]) -> tuple[str, str]:
     return (archive.get("archived_at_utc") or "", archive.get("archive_id") or "")
 
 
+def grocery_age_days(started_at_utc: str | None) -> int | None:
+    if not started_at_utc:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return max(0, int((datetime.now(UTC) - started.astimezone(UTC)).total_seconds() // 86400))
+
+
 def local_date_parts(utc_iso: str | None) -> tuple[str | None, str | None]:
     if not utc_iso:
         return None, None
@@ -771,7 +784,8 @@ class GroceryListStore:
     archive_dir: Path
     database: RecipeDatabase | None = None
     use_database: bool = False
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    stale_after_days: int = DEFAULT_GROCERY_STALE_DAYS
+    lock: threading.RLock = field(default_factory=threading.RLock)
     items: list[dict[str, Any]] = None
     by_normalized: dict[str, dict[str, Any]] = None
     started_at_utc: str | None = None
@@ -808,6 +822,10 @@ class GroceryListStore:
                 "source": row.get("source") or None,
                 "recipe_id": row.get("recipe_id") or None,
                 "recipe_title": row.get("recipe_title") or None,
+                "quantity": row.get("quantity"),
+                "unit": row.get("unit") or None,
+                "category": row.get("category") or None,
+                "purchased": bool(row.get("purchased", False)),
             }
             items.append(item)
             by_normalized[normalized] = item
@@ -835,14 +853,55 @@ class GroceryListStore:
     def get_items(self) -> dict[str, Any]:
         with self.lock:
             started_local_date, started_local_day = local_date_parts(self.started_at_utc)
+            age_days = grocery_age_days(self.started_at_utc)
             return {
                 "count": len(self.items),
                 "started_at_utc": self.started_at_utc,
                 "started_local_date": started_local_date,
                 "started_local_day": started_local_day,
                 "updated_at_utc": self.updated_at_utc,
+                "age_days": age_days,
+                "stale_after_days": self.stale_after_days,
+                "is_stale": age_days is not None and age_days >= self.stale_after_days,
                 "items": [summarize_grocery_item(item) for item in self.items],
             }
+
+    def update_item(self, item_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            item = next((row for row in self.items if row.get("id") == item_id), None)
+            if not item:
+                return {"ok": False, "found": False}
+            if "item" in changes:
+                item_text = " ".join(str(changes["item"]).strip().split())
+                if not item_text:
+                    raise ValueError("'item' must be a non-empty string.")
+                normalized = normalize_grocery_item(item_text)
+                duplicate = self.by_normalized.get(normalized)
+                if duplicate and duplicate.get("id") != item_id:
+                    raise ValueError("An equivalent item is already on the grocery list.")
+                self.by_normalized.pop(item.get("normalized_item"), None)
+                item["item"] = item_text
+                item["normalized_item"] = normalized
+                self.by_normalized[normalized] = item
+            for key in ("quantity", "unit", "category", "purchased"):
+                if key in changes:
+                    item[key] = changes[key]
+            item["updated_at_utc"] = now_iso()
+            self.items.sort(key=grocery_sort_key, reverse=True)
+            self.updated_at_utc = now_iso()
+            self.save()
+            return {"ok": True, "found": True, "item": summarize_grocery_item(item), **self.get_items()}
+
+    def remove_item(self, item_id: str) -> dict[str, Any]:
+        with self.lock:
+            item = next((row for row in self.items if row.get("id") == item_id), None)
+            if not item:
+                return {"ok": False, "found": False}
+            self.items = [row for row in self.items if row.get("id") != item_id]
+            self.by_normalized.pop(item.get("normalized_item"), None)
+            self.updated_at_utc = now_iso()
+            self.save()
+            return {"ok": True, "found": True, "removed": summarize_grocery_item(item), **self.get_items()}
 
     def append_items(
         self,
@@ -873,6 +932,10 @@ class GroceryListStore:
                     "source": source,
                     "recipe_id": recipe_id,
                     "recipe_title": recipe_title,
+                    "quantity": None,
+                    "unit": None,
+                    "category": None,
+                    "purchased": False,
                 }
                 self.items.append(item)
                 self.by_normalized[normalized] = item
@@ -893,22 +956,31 @@ class GroceryListStore:
 
     def clear(self) -> dict[str, Any]:
         with self.lock:
+            archived = None
+            if self.items:
+                archived = self.archive_current(name="Cleared grocery list", status="cleared")["archived"]
             self.items = []
             self.by_normalized = {}
             self.started_at_utc = None
             self.updated_at_utc = now_iso()
             self.save()
-            return {
+            result = {
                 "ok": True,
                 "count": 0,
                 "started_at_utc": None,
                 "started_local_date": None,
                 "started_local_day": None,
                 "updated_at_utc": self.updated_at_utc,
+                "age_days": None,
+                "stale_after_days": self.stale_after_days,
+                "is_stale": False,
                 "items": [],
             }
+            if archived:
+                result["archived"] = archived
+            return result
 
-    def archive_current(self, name: str | None = None) -> dict[str, Any]:
+    def archive_current(self, name: str | None = None, status: str = "archived") -> dict[str, Any]:
         with self.lock:
             archive_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
             archive_name = " ".join((name or "").strip().split()) or None
@@ -921,6 +993,8 @@ class GroceryListStore:
                 "started_local_date": started_local_date,
                 "started_local_day": started_local_day,
                 "archived_at_utc": archived_at,
+                "status": status,
+                "deleted_at_utc": None,
                 "item_count": len(self.items),
                 "items": self.items,
             }
@@ -945,6 +1019,9 @@ class GroceryListStore:
                 "started_local_date": None,
                 "started_local_day": None,
                 "updated_at_utc": self.updated_at_utc,
+                "age_days": None,
+                "stale_after_days": self.stale_after_days,
+                "is_stale": False,
                 "items": [],
             },
         }
@@ -952,7 +1029,7 @@ class GroceryListStore:
     def list_archives(self) -> dict[str, Any]:
         if self.database and self.use_database:
             database_archives = self.database.list_grocery_archives()
-            if not database_archives:
+            if not self.database.list_grocery_archives(include_deleted=True):
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 for path in self.archive_dir.glob("*.json"):
                     try:
@@ -975,9 +1052,9 @@ class GroceryListStore:
         archives.sort(key=archive_sort_key, reverse=True)
         return {"count": len(archives), "items": archives}
 
-    def get_archive(self, archive_id: str) -> dict[str, Any] | None:
+    def get_archive(self, archive_id: str, *, include_deleted: bool = False) -> dict[str, Any] | None:
         if self.database and self.use_database:
-            payload = self.database.get_grocery_archive(archive_id)
+            payload = self.database.get_grocery_archive(archive_id, include_deleted=include_deleted)
             if not payload:
                 return None
             return {
@@ -987,6 +1064,8 @@ class GroceryListStore:
                 "started_local_date": payload.get("started_local_date"),
                 "started_local_day": payload.get("started_local_day"),
                 "archived_at_utc": payload.get("archived_at_utc"),
+                "status": payload.get("status") or "archived",
+                "deleted_at_utc": payload.get("deleted_at_utc"),
                 "item_count": len(payload.get("items") or []),
                 "items": [summarize_grocery_item(item) for item in (payload.get("items") or [])],
             }
@@ -1004,6 +1083,8 @@ class GroceryListStore:
             "started_local_date": payload.get("started_local_date"),
             "started_local_day": payload.get("started_local_day"),
             "archived_at_utc": payload.get("archived_at_utc"),
+            "status": payload.get("status") or "archived",
+            "deleted_at_utc": payload.get("deleted_at_utc"),
             "item_count": len(payload.get("items") or []),
             "items": [summarize_grocery_item(item) for item in (payload.get("items") or [])],
         }
@@ -1069,6 +1150,11 @@ def summarize_grocery_item(item: dict[str, Any]) -> dict[str, Any]:
         "source": item.get("source"),
         "recipe_id": item.get("recipe_id"),
         "recipe_title": item.get("recipe_title"),
+        "quantity": item.get("quantity"),
+        "unit": item.get("unit"),
+        "category": item.get("category"),
+        "purchased": bool(item.get("purchased", False)),
+        "updated_at_utc": item.get("updated_at_utc"),
     }
 
 
@@ -1080,6 +1166,8 @@ def summarize_grocery_archive(archive: dict[str, Any]) -> dict[str, Any]:
         "started_local_date": archive.get("started_local_date"),
         "started_local_day": archive.get("started_local_day"),
         "archived_at_utc": archive.get("archived_at_utc"),
+        "status": archive.get("status") or "archived",
+        "deleted_at_utc": archive.get("deleted_at_utc"),
         "item_count": archive.get("item_count", len(archive.get("items") or [])),
     }
 
@@ -1344,16 +1432,52 @@ def create_app(
     def clear_grocery_list() -> Any:
         return jsonify(grocery_store.clear())
 
+    @app.patch("/grocery-list/items/<item_id>")
+    def update_grocery_item(item_id: str) -> Any:
+        body = request.get_json(silent=True) or {}
+        allowed = {"item", "quantity", "unit", "category", "purchased"}
+        changes = {key: body[key] for key in allowed if key in body}
+        if not changes:
+            abort(400, description="Request JSON must include at least one editable item field.")
+        if "item" in changes and not isinstance(changes["item"], str):
+            abort(400, description="'item' must be a string.")
+        if "purchased" in changes and not isinstance(changes["purchased"], bool):
+            abort(400, description="'purchased' must be a boolean.")
+        try:
+            result = grocery_store.update_item(item_id, changes)
+        except ValueError as exc:
+            abort(400, description=str(exc))
+        if not result["found"]:
+            abort(404, description=f"item_id not found: {item_id}")
+        return jsonify(result)
+
+    @app.delete("/grocery-list/items/<item_id>")
+    def remove_grocery_item(item_id: str) -> Any:
+        result = grocery_store.remove_item(item_id)
+        if not result["found"]:
+            abort(404, description=f"item_id not found: {item_id}")
+        return jsonify(result)
+
     @app.get("/grocery-list/archives")
     def list_grocery_archives() -> Any:
         return jsonify(grocery_store.list_archives())
 
     @app.get("/grocery-list/archives/<archive_id>")
     def get_grocery_archive(archive_id: str) -> Any:
-        archive = grocery_store.get_archive(archive_id)
+        include_deleted = request.args.get("include_deleted", "false").lower() == "true"
+        archive = grocery_store.get_archive(archive_id, include_deleted=include_deleted)
         if not archive:
             abort(404, description=f"archive_id not found: {archive_id}")
         return jsonify(archive)
+
+    @app.delete("/grocery-list/archives/<archive_id>")
+    def delete_grocery_archive(archive_id: str) -> Any:
+        if not grocery_store.database or not grocery_store.use_database:
+            abort(409, description="Soft-delete archive support requires SQLite data source.")
+        deleted_at = now_iso()
+        if not grocery_store.database.soft_delete_grocery_archive(archive_id, deleted_at):
+            abort(404, description=f"archive_id not found: {archive_id}")
+        return jsonify({"ok": True, "archive_id": archive_id, "status": "deleted", "deleted_at_utc": deleted_at})
 
     @app.post("/grocery-list/archive")
     def archive_grocery_list() -> Any:
@@ -1410,6 +1534,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", default=DEFAULT_OUT)
     p.add_argument("--grocery-list", default=DEFAULT_GROCERY_LIST_PATH)
     p.add_argument("--grocery-archive-dir", default=DEFAULT_GROCERY_ARCHIVE_DIR)
+    p.add_argument("--grocery-stale-days", type=int, default=DEFAULT_GROCERY_STALE_DAYS)
     p.add_argument("--custom-instructions", default=DEFAULT_CUSTOM_INSTRUCTIONS_PATH)
     p.add_argument("--database", default=DEFAULT_DATABASE, help="SQLite database path used during migration.")
     p.add_argument("--data-source", choices=("ndjson", "sqlite"), default="ndjson")
@@ -1426,6 +1551,7 @@ def build_store(
     pipeline_script: str,
     grocery_list: str,
     grocery_archive_dir: str,
+    grocery_stale_days: int = DEFAULT_GROCERY_STALE_DAYS,
     database: str | None = None,
     data_source: str = "ndjson",
 ) -> tuple[RecipeStore, GroceryListStore]:
@@ -1454,6 +1580,7 @@ def build_store(
         archive_dir=grocery_archive_path,
         database=database_store,
         use_database=data_source == "sqlite",
+        stale_after_days=max(1, grocery_stale_days),
     )
     store.load()
     return store, grocery_store
@@ -1465,6 +1592,10 @@ def app_from_env() -> Flask:
     out = os.getenv("RECIPE_OUT", DEFAULT_OUT)
     grocery_list = os.getenv("RECIPE_GROCERY_LIST_PATH", DEFAULT_GROCERY_LIST_PATH)
     grocery_archive_dir = os.getenv("RECIPE_GROCERY_ARCHIVE_DIR", DEFAULT_GROCERY_ARCHIVE_DIR)
+    try:
+        grocery_stale_days = max(1, int(os.getenv("RECIPE_GROCERY_STALE_DAYS", str(DEFAULT_GROCERY_STALE_DAYS))))
+    except ValueError as exc:
+        raise ValueError("RECIPE_GROCERY_STALE_DAYS must be a positive integer.") from exc
     custom_instructions = os.getenv("RECIPE_CUSTOM_INSTRUCTIONS_PATH", DEFAULT_CUSTOM_INSTRUCTIONS_PATH)
     database = os.getenv("RECIPE_DATABASE_PATH", DEFAULT_DATABASE)
     data_source = os.getenv("RECIPE_DATA_SOURCE", "ndjson").lower()
@@ -1480,6 +1611,7 @@ def app_from_env() -> Flask:
         pipeline_script=pipeline_script,
         grocery_list=grocery_list,
         grocery_archive_dir=grocery_archive_dir,
+        grocery_stale_days=grocery_stale_days,
         database=database,
         data_source=data_source,
     )

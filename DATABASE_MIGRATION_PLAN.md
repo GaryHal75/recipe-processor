@@ -91,7 +91,7 @@ The existing search behavior should remain the reference behavior during the fir
 Move mutable service state into SQLite after recipe reads are stable:
 
 - `grocery_state` (current grocery-list payload)
-- `grocery_archives`
+- `grocery_archives` with status and soft-delete timestamps
 - `custom_instructions`
 - `ingestion_state`
 
@@ -156,6 +156,7 @@ Success criteria:
 
 - Migrate grocery-list items and archives into SQLite.
 - Migrate custom assistant instructions into SQLite.
+- Add editable grocery items, stale-list metadata, and recoverable soft-delete behavior.
 - Keep one-time import paths from the existing JSON and Markdown files.
 - Continue supporting export or recovery to the current file formats.
 

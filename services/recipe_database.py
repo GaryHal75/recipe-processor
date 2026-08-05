@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recipes (
@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS grocery_state (
 CREATE TABLE IF NOT EXISTS grocery_archives (
     archive_id TEXT PRIMARY KEY,
     archive_json TEXT NOT NULL,
-    archived_at_utc TEXT
+    archived_at_utc TEXT,
+    status TEXT NOT NULL DEFAULT 'archived',
+    deleted_at_utc TEXT
 );
 
 CREATE TABLE IF NOT EXISTS custom_instructions (
@@ -109,6 +111,11 @@ class RecipeDatabase:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(recipes)")}
             if "source_mtime_utc" not in columns:
                 connection.execute("ALTER TABLE recipes ADD COLUMN source_mtime_utc TEXT")
+            archive_columns = {row[1] for row in connection.execute("PRAGMA table_info(grocery_archives)")}
+            if "status" not in archive_columns:
+                connection.execute("ALTER TABLE grocery_archives ADD COLUMN status TEXT NOT NULL DEFAULT 'archived'")
+            if "deleted_at_utc" not in archive_columns:
+                connection.execute("ALTER TABLE grocery_archives ADD COLUMN deleted_at_utc TEXT")
             connection.execute(
                 "INSERT INTO database_meta(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -252,25 +259,54 @@ class RecipeDatabase:
     def save_grocery_archive(self, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO grocery_archives(archive_id, archive_json, archived_at_utc) VALUES (?, ?, ?) "
-                "ON CONFLICT(archive_id) DO UPDATE SET archive_json=excluded.archive_json, archived_at_utc=excluded.archived_at_utc",
-                (payload.get("archive_id"), _json(payload), payload.get("archived_at_utc")),
+                "INSERT INTO grocery_archives(archive_id, archive_json, archived_at_utc, status, deleted_at_utc) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(archive_id) DO UPDATE SET archive_json=excluded.archive_json, "
+                "archived_at_utc=excluded.archived_at_utc, status=excluded.status, deleted_at_utc=excluded.deleted_at_utc",
+                (
+                    payload.get("archive_id"),
+                    _json(payload),
+                    payload.get("archived_at_utc"),
+                    payload.get("status") or "archived",
+                    payload.get("deleted_at_utc"),
+                ),
             )
 
-    def list_grocery_archives(self) -> list[dict[str, Any]]:
+    def list_grocery_archives(self, *, include_deleted: bool = False) -> list[dict[str, Any]]:
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT archive_json FROM grocery_archives ORDER BY archived_at_utc DESC, archive_id DESC"
-            ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+            query = "SELECT archive_json, status, deleted_at_utc FROM grocery_archives"
+            if not include_deleted:
+                query += " WHERE deleted_at_utc IS NULL"
+            query += " ORDER BY archived_at_utc DESC, archive_id DESC"
+            rows = connection.execute(query).fetchall()
+        payloads = []
+        for row in rows:
+            payload = json.loads(row[0])
+            payload["status"] = row[1] or payload.get("status") or "archived"
+            payload["deleted_at_utc"] = row[2] or payload.get("deleted_at_utc")
+            payloads.append(payload)
+        return payloads
 
-    def get_grocery_archive(self, archive_id: str) -> dict[str, Any] | None:
+    def get_grocery_archive(self, archive_id: str, *, include_deleted: bool = False) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT archive_json FROM grocery_archives WHERE archive_id = ?",
-                (archive_id,),
-            ).fetchone()
-        return json.loads(row[0]) if row else None
+            query = "SELECT archive_json, status, deleted_at_utc FROM grocery_archives WHERE archive_id = ?"
+            if not include_deleted:
+                query += " AND deleted_at_utc IS NULL"
+            row = connection.execute(query, (archive_id,)).fetchone()
+        if not row:
+            return None
+        payload = json.loads(row[0])
+        payload["status"] = row[1] or payload.get("status") or "archived"
+        payload["deleted_at_utc"] = row[2] or payload.get("deleted_at_utc")
+        return payload
+
+    def soft_delete_grocery_archive(self, archive_id: str, deleted_at_utc: str) -> bool:
+        with self.connect() as connection:
+            result = connection.execute(
+                "UPDATE grocery_archives SET status = 'deleted', deleted_at_utc = ? WHERE archive_id = ? AND deleted_at_utc IS NULL",
+                (deleted_at_utc, archive_id),
+            )
+        return result.rowcount > 0
 
     def load_custom_instructions(self) -> dict[str, Any] | None:
         with self.connect() as connection:
