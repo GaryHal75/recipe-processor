@@ -92,6 +92,7 @@ Move mutable service state into SQLite after recipe reads are stable:
 
 - `grocery_state` (current grocery-list payload)
 - `grocery_archives` with status and soft-delete timestamps
+- `grocery_events` for append, edit, removal, archive, clear, and soft-delete history
 - `custom_instructions`
 - `ingestion_state`
 

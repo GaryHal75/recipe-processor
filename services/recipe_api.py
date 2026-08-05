@@ -796,6 +796,24 @@ class GroceryListStore:
         self.by_normalized = {}
         self.load()
 
+    def record_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        item_id: str | None = None,
+        archive_id: str | None = None,
+        occurred_at_utc: str | None = None,
+    ) -> None:
+        if self.database and self.use_database:
+            self.database.record_grocery_event(
+                event_type,
+                payload,
+                item_id=item_id,
+                archive_id=archive_id,
+                occurred_at_utc=occurred_at_utc or now_iso(),
+            )
+
     def load(self) -> None:
         payload: dict[str, Any] = {"items": [], "started_at_utc": None, "updated_at_utc": None}
         database_payload = self.database.load_grocery_state() if self.database and self.use_database else None
@@ -890,6 +908,7 @@ class GroceryListStore:
             self.items.sort(key=grocery_sort_key, reverse=True)
             self.updated_at_utc = now_iso()
             self.save()
+            self.record_event("item_updated", {"changes": changes}, item_id=item_id, occurred_at_utc=item["updated_at_utc"])
             return {"ok": True, "found": True, "item": summarize_grocery_item(item), **self.get_items()}
 
     def remove_item(self, item_id: str) -> dict[str, Any]:
@@ -901,6 +920,7 @@ class GroceryListStore:
             self.by_normalized.pop(item.get("normalized_item"), None)
             self.updated_at_utc = now_iso()
             self.save()
+            self.record_event("item_removed", {"item": summarize_grocery_item(item)}, item_id=item_id, occurred_at_utc=self.updated_at_utc)
             return {"ok": True, "found": True, "removed": summarize_grocery_item(item), **self.get_items()}
 
     def append_items(
@@ -913,6 +933,7 @@ class GroceryListStore:
     ) -> dict[str, Any]:
         added = 0
         duplicates = 0
+        added_items: list[dict[str, Any]] = []
         with self.lock:
             if self.started_at_utc is None:
                 self.started_at_utc = now_iso()
@@ -939,11 +960,23 @@ class GroceryListStore:
                 }
                 self.items.append(item)
                 self.by_normalized[normalized] = item
+                added_items.append(item)
                 added += 1
 
             self.items.sort(key=grocery_sort_key, reverse=True)
             self.updated_at_utc = now_iso()
             self.save()
+            self.record_event(
+                "items_appended",
+                {
+                    "items": [summarize_grocery_item(item) for item in added_items],
+                    "duplicates": duplicates,
+                    "source": source,
+                    "recipe_id": recipe_id,
+                    "recipe_title": recipe_title,
+                },
+                occurred_at_utc=self.updated_at_utc,
+            )
 
             return {
                 "ok": True,
@@ -1003,6 +1036,12 @@ class GroceryListStore:
             archive_path.write_text(json.dumps(archive_payload, indent=2, ensure_ascii=True), encoding="utf-8")
             if self.database and self.use_database:
                 self.database.save_grocery_archive(archive_payload)
+            self.record_event(
+                "list_cleared" if status == "cleared" else "list_archived",
+                {"item_count": len(self.items), "status": status, "name": archive_name},
+                archive_id=archive_id,
+                occurred_at_utc=archived_at,
+            )
 
             self.items = []
             self.by_normalized = {}
@@ -1477,6 +1516,12 @@ def create_app(
         deleted_at = now_iso()
         if not grocery_store.database.soft_delete_grocery_archive(archive_id, deleted_at):
             abort(404, description=f"archive_id not found: {archive_id}")
+        grocery_store.record_event(
+            "archive_deleted",
+            {"status": "deleted"},
+            archive_id=archive_id,
+            occurred_at_utc=deleted_at,
+        )
         return jsonify({"ok": True, "archive_id": archive_id, "status": "deleted", "deleted_at_utc": deleted_at})
 
     @app.post("/grocery-list/archive")
@@ -1496,6 +1541,15 @@ def create_app(
         if not freeform_items and not recipe_ids:
             abort(400, description="Request JSON must include non-empty 'items' or 'recipe_ids'.")
 
+        recipes = []
+        for recipe_id in recipe_ids:
+            if recipe_id in skip_recipe_ids:
+                continue
+            recipe = store.get_recipe(recipe_id)
+            if not recipe:
+                abort(404, description=f"recipe_id not found: {recipe_id}")
+            recipes.append((recipe_id, recipe))
+
         added = 0
         duplicates = 0
 
@@ -1504,12 +1558,7 @@ def create_app(
             added += result["added"]
             duplicates += result["duplicates"]
 
-        for recipe_id in recipe_ids:
-            if recipe_id in skip_recipe_ids:
-                continue
-            recipe = store.get_recipe(recipe_id)
-            if not recipe:
-                abort(404, description=f"recipe_id not found: {recipe_id}")
+        for recipe_id, recipe in recipes:
             result = grocery_store.append_items(
                 [str(item) for item in (recipe.get("ingredients") or [])],
                 source=source,

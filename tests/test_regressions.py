@@ -155,6 +155,13 @@ class DatabaseMigrationTests(unittest.TestCase):
             grocery = client.get("/grocery-list", headers=auth).get_json()
             self.assertEqual(grocery["count"], 1)
             self.assertIn("is_stale", grocery)
+            rejected = client.post(
+                "/grocery-list/append",
+                json={"items": ["milk"], "recipe_ids": ["missing-recipe"]},
+                headers=auth,
+            )
+            self.assertEqual(rejected.status_code, 404)
+            self.assertEqual(client.get("/grocery-list", headers=auth).get_json()["count"], 1)
             item_id = grocery["items"][0]["id"]
             updated = client.patch(
                 f"/grocery-list/items/{item_id}",
@@ -188,6 +195,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             )
             self.assertEqual(deleted.status_code, 200)
             self.assertEqual(deleted.get_json()["status"], "deleted")
+            self.assertGreaterEqual(len(database.list_grocery_events()), 5)
             self.assertEqual(
                 client.put(
                     "/custom-instructions",

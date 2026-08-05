@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recipes (
@@ -67,6 +68,18 @@ CREATE TABLE IF NOT EXISTS custom_instructions (
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS grocery_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    item_id TEXT,
+    archive_id TEXT,
+    occurred_at_utc TEXT NOT NULL,
+    event_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_grocery_events_occurred_at ON grocery_events(occurred_at_utc);
+CREATE INDEX IF NOT EXISTS idx_grocery_events_type ON grocery_events(event_type);
 """
 
 
@@ -307,6 +320,46 @@ class RecipeDatabase:
                 (deleted_at_utc, archive_id),
             )
         return result.rowcount > 0
+
+    def record_grocery_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        item_id: str | None = None,
+        archive_id: str | None = None,
+        occurred_at_utc: str,
+    ) -> str:
+        event_id = uuid.uuid4().hex
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO grocery_events(event_id, event_type, item_id, archive_id, occurred_at_utc, event_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (event_id, event_type, item_id, archive_id, occurred_at_utc, _json(payload)),
+            )
+        return event_id
+
+    def list_grocery_events(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT event_id, event_type, item_id, archive_id, occurred_at_utc, event_json "
+                "FROM grocery_events ORDER BY occurred_at_utc DESC, event_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        events = []
+        for row in rows:
+            payload = json.loads(row[5])
+            payload.update(
+                {
+                    "event_id": row[0],
+                    "event_type": row[1],
+                    "item_id": row[2],
+                    "archive_id": row[3],
+                    "occurred_at_utc": row[4],
+                }
+            )
+            events.append(payload)
+        return events
 
     def load_custom_instructions(self) -> dict[str, Any] | None:
         with self.connect() as connection:
