@@ -14,6 +14,8 @@ It turns recipe documents into a searchable structured dataset, then exposes tha
 - Maintain a persistent grocery list with append, archive, and retrieval operations.
 - Reload the dataset or trigger ingestion through the API.
 - Store custom recipe-assistant instructions independently from source code.
+- Synchronize the normalized dataset into a local SQLite database during the persistence migration.
+- Build an SQLite FTS5 search index while preserving the existing search ranking behavior.
 - Run locally, on a server, or as a backend for another chatbot or sidecar service.
 
 ## How it works
@@ -37,6 +39,8 @@ recipe_pipeline.py
 ```
 
 The ingestion pipeline can run once or in polling-watch mode. The API loads the generated NDJSON dataset into an in-memory search index and can refresh it after new recipes are ingested.
+
+During the database migration, the API keeps NDJSON as its serving source and synchronizes a local `structured/recipes.db` copy. This database is runtime data and is not required to be present in a fresh clone.
 
 ## Quick start
 
@@ -165,6 +169,16 @@ The generated dataset is designed to be useful both to the API and to an externa
 
 The API can be configured with command-line arguments or environment variables. `.env.example` provides a client configuration template.
 
+The database path is configured with `RECIPE_DATABASE_PATH` or `--database`. The default `RECIPE_DATA_SOURCE=ndjson` keeps NDJSON as the serving source while synchronizing SQLite. Set `RECIPE_DATA_SOURCE=sqlite` to exercise database-backed reads and SQLite FTS search; the current transition still refreshes SQLite from the NDJSON export before loading it.
+
+To import an existing NDJSON export directly:
+
+```bash
+python -m services.recipe_database \
+  --ndjson structured/recipes.ndjson \
+  --database structured/recipes.db
+```
+
 Optional bearer-token protection:
 
 ```bash
@@ -196,11 +210,13 @@ The root, health, and OpenAPI-documentation routes remain available without auth
 ├── scripts/
 │   └── recipe_pipeline.py     # Document ingestion and normalization
 ├── services/
-│   └── recipe_api.py          # Flask API and search service
+│   ├── recipe_api.py          # Flask API and search service
+│   └── recipe_database.py     # SQLite schema and NDJSON importer
 ├── openapi.recipes.yaml       # OpenAPI description
 ├── RECIPE_PIPELINE.md         # Pipeline details
 ├── RECIPE_API.md              # API reference and integration notes
 ├── requirements.txt
+├── tests/
 └── .env.example
 ```
 

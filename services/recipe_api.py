@@ -19,6 +19,11 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, jsonify, request, send_file
 
+try:
+    from services.recipe_database import RecipeDatabase
+except ModuleNotFoundError:  # Direct execution: python services/recipe_api.py
+    from recipe_database import RecipeDatabase
+
 
 DEFAULT_DATASET = "structured/recipes.ndjson"
 DEFAULT_SOURCE = "."
@@ -26,6 +31,7 @@ DEFAULT_OUT = "structured"
 DEFAULT_GROCERY_LIST_PATH = "structured/grocery_list.json"
 DEFAULT_GROCERY_ARCHIVE_DIR = "structured/grocery_list_archive"
 DEFAULT_CUSTOM_INSTRUCTIONS_PATH = "structured/recipe_custom_instructions.md"
+DEFAULT_DATABASE = "structured/recipes.db"
 DEFAULT_PORT = 8787
 API_KEY_ENV = "RECIPE_API_KEY"
 BEARER_TOKEN_ENV = "RECIPE_API_BEARER_TOKEN"
@@ -438,6 +444,8 @@ class RecipeStore:
     source_dir: Path
     out_dir: Path
     pipeline_script: Path
+    database: RecipeDatabase | None = None
+    data_source: str = "ndjson"
     lock: threading.RLock = field(default_factory=threading.RLock)
     loaded_at_utc: str | None = None
     recipes: list[dict[str, Any]] = None
@@ -445,6 +453,7 @@ class RecipeStore:
     search_docs: dict[str, dict[str, Any]] = None
     duplicate_info: dict[str, dict[str, Any]] = None
     profiles: dict[str, dict[str, Any]] = None
+    database_sync_error: str | None = None
 
     def __post_init__(self) -> None:
         self.recipes = []
@@ -462,29 +471,47 @@ class RecipeStore:
         title_groups: dict[str, set[str]] = {}
         source_groups: dict[str, set[str]] = {}
 
-        if not self.dataset_path.exists():
+        if not self.dataset_path.exists() and not (self.data_source == "sqlite" and self.database):
             raise FileNotFoundError(f"Dataset not found: {self.dataset_path}")
 
-        with self.dataset_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                payload = json.loads(line)
-                rid = payload.get("recipe_id")
-                if not rid:
-                    continue
-                recipes.append(payload)
-                by_id[rid] = payload
-                profiles[rid] = infer_recipe_profile(payload)
-                search_docs[rid] = build_search_document(payload)
-                duplicate_signals = build_duplicate_signals(payload)
-                title_key = duplicate_signals["title_key"]
-                source_key = duplicate_signals["source_key"]
-                if title_key:
-                    title_groups.setdefault(title_key, set()).add(rid)
-                if source_key:
-                    source_groups.setdefault(source_key, set()).add(rid)
+        if self.data_source == "sqlite" and self.database:
+            try:
+                if self.dataset_path.exists():
+                    self.database.replace_from_ndjson(self.dataset_path)
+                recipes = self.database.load_recipes()
+                self.database_sync_error = None
+            except Exception as exc:  # Keep the NDJSON path available during migration.
+                self.database_sync_error = str(exc)
+                self.data_source = "ndjson"
+        if self.data_source == "ndjson":
+            with self.dataset_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        recipes.append(payload)
+            if self.database:
+                try:
+                    self.database.replace_from_recipes(recipes)
+                except Exception as exc:  # Keep NDJSON serving available during migration.
+                    self.database_sync_error = str(exc)
+
+        for payload in recipes:
+            rid = payload.get("recipe_id")
+            if not rid:
+                continue
+            by_id[rid] = payload
+            profiles[rid] = infer_recipe_profile(payload)
+            search_docs[rid] = build_search_document(payload)
+            duplicate_signals = build_duplicate_signals(payload)
+            title_key = duplicate_signals["title_key"]
+            source_key = duplicate_signals["source_key"]
+            if title_key:
+                title_groups.setdefault(title_key, set()).add(rid)
+            if source_key:
+                source_groups.setdefault(source_key, set()).add(rid)
 
         for rid, recipe in by_id.items():
             duplicate_signals = build_duplicate_signals(recipe)
@@ -508,6 +535,8 @@ class RecipeStore:
             self.duplicate_info = duplicate_info
             self.profiles = profiles
             self.loaded_at_utc = now_iso()
+        if self.data_source == "sqlite":
+            self.database_sync_error = None
         return len(recipes)
 
     def stats(self) -> dict[str, Any]:
@@ -516,6 +545,9 @@ class RecipeStore:
                 "recipes": len(self.recipes),
                 "loaded_at_utc": self.loaded_at_utc,
                 "dataset_path": str(self.dataset_path),
+                "data_source": self.data_source,
+                "database": self.database.stats() if self.database else None,
+                "database_sync_error": self.database_sync_error,
             }
 
     def list_recipes(self, q: str | None, limit: int, offset: int) -> list[dict[str, Any]]:
@@ -547,6 +579,7 @@ class RecipeStore:
         *,
         require_all_terms: bool = False,
         expand_terms: bool = True,
+        candidate_ids: set[str] | None = None,
     ) -> list[tuple[int, dict[str, Any]]]:
         raw_terms = tokenize(q)
         if not raw_terms:
@@ -561,6 +594,8 @@ class RecipeStore:
         with self.lock:
             for recipe in self.recipes:
                 rid = recipe["recipe_id"]
+                if candidate_ids is not None and rid not in candidate_ids:
+                    continue
                 doc = self.search_docs.get(rid) or {}
                 body_tokens = doc.get("body_tokens", set())
                 title_tokens = doc.get("title_tokens", set())
@@ -613,7 +648,16 @@ class RecipeStore:
         require_all_terms: bool = False,
         expand_terms: bool = True,
     ) -> list[dict[str, Any]]:
-        rows = self._search_rows(q, require_all_terms=require_all_terms, expand_terms=expand_terms)
+        candidate_ids = None
+        if self.data_source == "sqlite" and self.database:
+            terms = expand_search_terms(tokenize(q), expand_terms)
+            candidate_ids = self.database.search_recipe_ids(terms)
+        rows = self._search_rows(
+            q,
+            require_all_terms=require_all_terms,
+            expand_terms=expand_terms,
+            candidate_ids=candidate_ids,
+        )
         return [
             summarize_recipe(
                 r,
@@ -1309,6 +1353,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grocery-list", default=DEFAULT_GROCERY_LIST_PATH)
     p.add_argument("--grocery-archive-dir", default=DEFAULT_GROCERY_ARCHIVE_DIR)
     p.add_argument("--custom-instructions", default=DEFAULT_CUSTOM_INSTRUCTIONS_PATH)
+    p.add_argument("--database", default=DEFAULT_DATABASE, help="SQLite database path used during migration.")
+    p.add_argument("--data-source", choices=("ndjson", "sqlite"), default="ndjson")
     p.add_argument("--pipeline-script", default="scripts/recipe_pipeline.py")
     p.add_argument("--api-key", default=None, help=f"Legacy compatibility option; if omitted, reads {API_KEY_ENV}.")
     p.add_argument("--bearer-token", default=None, help=f"If omitted, reads {BEARER_TOKEN_ENV}.")
@@ -1322,6 +1368,8 @@ def build_store(
     pipeline_script: str,
     grocery_list: str,
     grocery_archive_dir: str,
+    database: str | None = None,
+    data_source: str = "ndjson",
 ) -> tuple[RecipeStore, GroceryListStore]:
     root = Path.cwd()
     dataset_path = (root / dataset).resolve()
@@ -1330,6 +1378,7 @@ def build_store(
     grocery_list_path = (root / grocery_list).expanduser().resolve()
     grocery_archive_path = (root / grocery_archive_dir).expanduser().resolve()
     pipeline_script_path = (root / pipeline_script).resolve()
+    database_store = RecipeDatabase((root / database).expanduser().resolve()) if database else None
 
     if not pipeline_script_path.exists():
         raise FileNotFoundError(f"Missing pipeline script: {pipeline_script_path}")
@@ -1339,6 +1388,8 @@ def build_store(
         source_dir=source_dir,
         out_dir=out_dir,
         pipeline_script=pipeline_script_path,
+        database=database_store,
+        data_source=data_source,
     )
     grocery_store = GroceryListStore(file_path=grocery_list_path, archive_dir=grocery_archive_path)
     store.load()
@@ -1352,6 +1403,10 @@ def app_from_env() -> Flask:
     grocery_list = os.getenv("RECIPE_GROCERY_LIST_PATH", DEFAULT_GROCERY_LIST_PATH)
     grocery_archive_dir = os.getenv("RECIPE_GROCERY_ARCHIVE_DIR", DEFAULT_GROCERY_ARCHIVE_DIR)
     custom_instructions = os.getenv("RECIPE_CUSTOM_INSTRUCTIONS_PATH", DEFAULT_CUSTOM_INSTRUCTIONS_PATH)
+    database = os.getenv("RECIPE_DATABASE_PATH", DEFAULT_DATABASE)
+    data_source = os.getenv("RECIPE_DATA_SOURCE", "ndjson").lower()
+    if data_source not in {"ndjson", "sqlite"}:
+        raise ValueError("RECIPE_DATA_SOURCE must be 'ndjson' or 'sqlite'.")
     pipeline_script = os.getenv("RECIPE_PIPELINE_SCRIPT", "scripts/recipe_pipeline.py")
     api_key = os.getenv(API_KEY_ENV)
     bearer_token = os.getenv(BEARER_TOKEN_ENV)
@@ -1362,6 +1417,8 @@ def app_from_env() -> Flask:
         pipeline_script=pipeline_script,
         grocery_list=grocery_list,
         grocery_archive_dir=grocery_archive_dir,
+        database=database,
+        data_source=data_source,
     )
     return create_app(
         store=store,
@@ -1381,6 +1438,8 @@ def main() -> int:
         pipeline_script=args.pipeline_script,
         grocery_list=args.grocery_list,
         grocery_archive_dir=args.grocery_archive_dir,
+        database=args.database,
+        data_source=args.data_source,
     )
     api_key = args.api_key or os.getenv(API_KEY_ENV)
     bearer_token = args.bearer_token or os.getenv(BEARER_TOKEN_ENV)

@@ -6,6 +6,10 @@ Introduce a local SQLite database as the durable store for the recipe service wh
 
 The migration should improve queryability and update reliability without disrupting the current ingestion pipeline, API behavior, grocery-list workflows, or local deployment.
 
+## Current status
+
+Phase 1 and the initial recipe-read portion of Phases 2–4 are complete. The service can create a local SQLite database, import the current NDJSON dataset, preserve duplicate-ID behavior, report synchronization status, read through SQLite when `RECIPE_DATA_SOURCE=sqlite`, and use an SQLite FTS5 index to prefilter searches. NDJSON remains the transition input and fallback while database-backed behavior is validated.
+
 ## Design decision
 
 Use SQLite for the first database implementation.

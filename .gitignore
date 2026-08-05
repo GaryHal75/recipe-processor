@@ -21,6 +21,7 @@ scripts/recipe_alt_refresh.local.sh
 
 # Generated pipeline output
 structured/
+*.db
 
 # Local-only recipe source files (keep private on your machine / Drive)
 *.docx

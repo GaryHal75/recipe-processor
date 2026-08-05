@@ -5,6 +5,7 @@ from pathlib import Path
 
 from scripts.recipe_pipeline import is_candidate, split_sections
 from services.recipe_api import build_store, create_app
+from services.recipe_database import RecipeDatabase
 
 
 class PipelineRegressionTests(unittest.TestCase):
@@ -78,3 +79,52 @@ class ApiValidationRegressionTests(unittest.TestCase):
             self.client.post("/search", json={"q": "onion", "limit": "abc"}, headers=auth).status_code,
             400,
         )
+
+
+class DatabaseMigrationTests(unittest.TestCase):
+    def test_recipe_import_is_repeatable_and_replaces_removed_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = RecipeDatabase(Path(temp_dir) / "recipes.db")
+            first = [
+                {"recipe_id": "one", "title": "One", "components": [{"title": "Sauce"}]},
+                {"recipe_id": "two", "title": "Two", "components": []},
+            ]
+            self.assertEqual(database.replace_from_recipes(first), 2)
+            self.assertEqual(database.stats()["recipes"], 2)
+            self.assertEqual(database.stats()["components"], 1)
+            self.assertEqual(database.search_recipe_ids(["sauce"]), {"one"})
+
+            self.assertEqual(database.replace_from_recipes(first), 2)
+            self.assertEqual(database.stats()["recipes"], 2)
+
+            self.assertEqual(database.replace_from_recipes(first[:1]), 1)
+            self.assertEqual(database.stats()["recipes"], 1)
+            self.assertEqual(database.stats()["components"], 1)
+
+    def test_store_can_read_through_sqlite_during_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            structured = root / "structured"
+            structured.mkdir()
+            ndjson = structured / "recipes.ndjson"
+            ndjson.write_text(
+                json.dumps({"recipe_id": "sqlite_recipe", "title": "SQLite Recipe"}) + "\n",
+                encoding="utf-8",
+            )
+            database_path = structured / "recipes.db"
+            database = RecipeDatabase(database_path)
+            database.replace_from_ndjson(ndjson)
+            source = root / "source"
+            source.mkdir()
+            store, _ = build_store(
+                dataset=str(ndjson),
+                source=str(source),
+                out=str(structured),
+                pipeline_script=str(Path.cwd() / "scripts/recipe_pipeline.py"),
+                grocery_list=str(root / "grocery.json"),
+                grocery_archive_dir=str(root / "archives"),
+                database=str(database_path),
+                data_source="sqlite",
+            )
+            self.assertEqual(store.data_source, "sqlite")
+            self.assertEqual(store.list_recipes(None, 10, 0)[0]["recipe_id"], "sqlite_recipe")
