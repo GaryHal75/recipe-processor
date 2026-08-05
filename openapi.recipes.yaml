@@ -1,0 +1,733 @@
+openapi: 3.1.0
+info:
+  title: Smart Home API (Recipes Routes)
+  description: Recipe endpoints under /api/recipes.
+  version: "1.1.0"
+servers:
+  - url: https://your-public-host.example.com/api/recipes
+    description: Replace with your own deployment URL.
+security:
+  - ApiKeyAuth: []
+paths:
+  /custom-instructions:
+    get:
+      operationId: getRecipeCustomInstructions
+      summary: Get canonical recipe-assistant custom instructions
+      responses:
+        "200":
+          description: Current custom instructions payload
+    put:
+      operationId: updateRecipeCustomInstructions
+      summary: Update canonical recipe-assistant custom instructions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instructions]
+              properties:
+                instructions:
+                  type: string
+      responses:
+        "200":
+          description: Updated custom instructions payload
+  /health:
+    get:
+      operationId: recipesHealth
+      summary: Check recipes API health
+      responses:
+        "200":
+          description: Health payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeHealthResponse"
+  /recipes:
+    get:
+      operationId: listRecipes
+      summary: List recipes
+      parameters:
+        - in: query
+          name: q
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 25
+        - in: query
+          name: offset
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Recipe list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeListResponse"
+  /recipes/{recipe_id}:
+    get:
+      operationId: getRecipe
+      summary: Get recipe by ID
+      parameters:
+        - in: path
+          name: recipe_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recipe payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recipe"
+        "404":
+          description: Recipe not found
+  /recipes/{recipe_id}/components:
+    get:
+      operationId: getRecipeComponents
+      summary: Get extracted components for one recipe
+      parameters:
+        - in: path
+          name: recipe_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recipe components
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeComponentsResponse"
+        "404":
+          description: Recipe not found
+  /recipes/{recipe_id}/pairings:
+    get:
+      operationId: getRecipePairings
+      summary: Get pairing suggestions for one recipe
+      parameters:
+        - in: path
+          name: recipe_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pairing suggestions
+        "404":
+          description: Recipe not found
+  /pairings:
+    get:
+      operationId: listRecipePairings
+      summary: List pairing suggestions for processed main dishes
+      parameters:
+        - in: query
+          name: recipe_id
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: Pairing suggestions
+  /components:
+    get:
+      operationId: listRecipeComponents
+      summary: List extracted components across recipes
+      parameters:
+        - in: query
+          name: recipe_id
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: component_type
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Component list
+  /search:
+    post:
+      operationId: searchRecipes
+      summary: Search recipes by normalized free-text query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeSearchResponse"
+  /reload:
+    post:
+      operationId: reloadRecipes
+      summary: Reload recipe dataset/index
+      responses:
+        "200":
+          description: Reload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeReloadResponse"
+  /ingest:
+    post:
+      operationId: ingestRecipes
+      summary: Trigger recipe ingestion pipeline and in-memory refresh
+      responses:
+        "200":
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeIngestResponse"
+  /grocery-list:
+    get:
+      operationId: getGroceryList
+      summary: Get the current grocery list
+      responses:
+        "200":
+          description: Active grocery list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryListResponse"
+    delete:
+      operationId: clearGroceryList
+      summary: Clear the active grocery list
+      responses:
+        "200":
+          description: Cleared grocery list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryListResponse"
+  /grocery-list/append:
+    post:
+      operationId: appendGroceryList
+      summary: Append GPT-selected items or recipe ingredients to the active grocery list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroceryAppendRequest"
+      responses:
+        "200":
+          description: Grocery list updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryAppendResponse"
+  /grocery-list/archive:
+    post:
+      operationId: archiveGroceryList
+      summary: Archive the active grocery list and start fresh
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroceryArchiveRequest"
+      responses:
+        "200":
+          description: Grocery list archived
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryArchiveResponse"
+  /grocery-list/archives:
+    get:
+      operationId: listGroceryArchives
+      summary: List archived grocery lists
+      responses:
+        "200":
+          description: Archived grocery lists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryArchiveListResponse"
+  /grocery-list/archives/{archive_id}:
+    get:
+      operationId: getGroceryArchive
+      summary: Get an archived grocery list
+      parameters:
+        - in: path
+          name: archive_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Archived grocery list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroceryArchiveDetail"
+        "404":
+          description: Archive not found
+components:
+  schemas:
+    RecipeHealthResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        time_utc:
+          type: string
+          format: date-time
+        recipes:
+          type: integer
+        loaded_at_utc:
+          type: string
+          format: date-time
+        dataset_path:
+          type: string
+    RecipeSummary:
+      type: object
+      properties:
+        recipe_id:
+          type: string
+        title:
+          type: string
+        servings:
+          type: string
+          nullable: true
+        total_time_text:
+          type: string
+          nullable: true
+        ingredient_count:
+          type: integer
+        step_count:
+          type: integer
+        source_file:
+          type: string
+          nullable: true
+        source_mtime_utc:
+          type: string
+          format: date-time
+          nullable: true
+        ingested_at_utc:
+          type: string
+          format: date-time
+          nullable: true
+        component_type:
+          type: string
+        component_count:
+          type: integer
+        is_potential_duplicate:
+          type: boolean
+        duplicate_candidate_ids:
+          type: array
+          items:
+            type: string
+        duplicate_match_reasons:
+          type: array
+          items:
+            type: string
+    RecipeListResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeSummary"
+    RecipeProfile:
+      type: object
+      properties:
+        component_type:
+          type: string
+        role_scores:
+          type: object
+          additionalProperties:
+            type: integer
+        cuisine_tags:
+          type: array
+          items:
+            type: string
+        protein_tags:
+          type: array
+          items:
+            type: string
+        platform_tags:
+          type: array
+          items:
+            type: string
+        is_pairing_component:
+          type: boolean
+    RecipeComponent:
+      type: object
+      properties:
+        component_id:
+          type: string
+        title:
+          type: string
+        component_type:
+          type: string
+        ingredients:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            type: string
+        compatibility_tags:
+          type: array
+          items:
+            type: string
+        profile:
+          $ref: "#/components/schemas/RecipeProfile"
+    RecipeComponentSummary:
+      type: object
+      properties:
+        component_id:
+          type: string
+        recipe_id:
+          type: string
+        recipe_title:
+          type: string
+        title:
+          type: string
+        component_type:
+          type: string
+        ingredient_count:
+          type: integer
+        step_count:
+          type: integer
+        compatibility_tags:
+          type: array
+          items:
+            type: string
+        cuisine_tags:
+          type: array
+          items:
+            type: string
+        protein_tags:
+          type: array
+          items:
+            type: string
+        platform_tags:
+          type: array
+          items:
+            type: string
+    RecipeSource:
+      type: object
+      properties:
+        file_name:
+          type: string
+        relative_path:
+          type: string
+        file_type:
+          type: string
+        sha256:
+          type: string
+        mtime_utc:
+          type: string
+          format: date-time
+        gdoc_id:
+          type: string
+          nullable: true
+    Recipe:
+      type: object
+      properties:
+        recipe_id:
+          type: string
+        title:
+          type: string
+        servings:
+          type: string
+          nullable: true
+        total_time_text:
+          type: string
+          nullable: true
+        ingredients:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            type: string
+        notes:
+          type: array
+          items:
+            type: string
+        profile:
+          $ref: "#/components/schemas/RecipeProfile"
+        component_type:
+          type: string
+        components:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeComponent"
+        source:
+          $ref: "#/components/schemas/RecipeSource"
+        ingested_at_utc:
+          type: string
+          format: date-time
+        parse_warning:
+          type: string
+          nullable: true
+    RecipeSearchResult:
+      allOf:
+        - $ref: "#/components/schemas/RecipeSummary"
+        - type: object
+          properties:
+            score:
+              type: integer
+    RecipeSearchResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeSearchResult"
+        search:
+          $ref: "#/components/schemas/SearchMetadata"
+    SearchMetadata:
+      type: object
+      properties:
+        query_terms:
+          type: array
+          items:
+            type: string
+        expanded_terms:
+          type: array
+          items:
+            type: string
+        require_all_terms:
+          type: boolean
+    RecipeComponentsResponse:
+      type: object
+      properties:
+        recipe_id:
+          type: string
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecipeComponentSummary"
+    SearchRequest:
+      type: object
+      properties:
+        q:
+          type: string
+        query:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        require_all_terms:
+          type: boolean
+          default: false
+          description: When true, all normalized query terms must be present in a recipe for it to match.
+        expand_terms:
+          type: boolean
+          default: true
+          description: When true, search expands select synonyms and punctuation-spacing variants before scoring.
+      required:
+        - q
+    RecipeReloadResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        recipes:
+          type: integer
+        loaded_at_utc:
+          type: string
+          format: date-time
+    RecipeIngestResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        return_code:
+          type: integer
+        stdout:
+          type: array
+          items:
+            type: string
+        stderr:
+          type: array
+          items:
+            type: string
+        recipes:
+          type: integer
+        loaded_at_utc:
+          type: string
+          format: date-time
+        dataset_path:
+          type: string
+    GroceryListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        item:
+          type: string
+        added_at_utc:
+          type: string
+          format: date-time
+        source:
+          type: string
+          nullable: true
+        recipe_id:
+          type: string
+          nullable: true
+        recipe_title:
+          type: string
+          nullable: true
+    GroceryListResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        started_at_utc:
+          type: string
+          format: date-time
+          nullable: true
+        started_local_date:
+          type: string
+          nullable: true
+        started_local_day:
+          type: string
+          nullable: true
+        updated_at_utc:
+          type: string
+          format: date-time
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroceryListItem"
+    GroceryAppendRequest:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: string
+        recipe_ids:
+          type: array
+          items:
+            type: string
+        skip_recipe_ids:
+          type: array
+          items:
+            type: string
+        source:
+          type: string
+      additionalProperties: false
+    GroceryAppendResponse:
+      allOf:
+        - $ref: "#/components/schemas/GroceryListResponse"
+        - type: object
+          properties:
+            ok:
+              type: boolean
+            added:
+              type: integer
+            duplicates:
+              type: integer
+    GroceryArchiveRequest:
+      type: object
+      properties:
+        name:
+          type: string
+      additionalProperties: false
+    GroceryArchiveSummary:
+      type: object
+      properties:
+        archive_id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        started_at_utc:
+          type: string
+          format: date-time
+          nullable: true
+        started_local_date:
+          type: string
+          nullable: true
+        started_local_day:
+          type: string
+          nullable: true
+        archived_at_utc:
+          type: string
+          format: date-time
+        item_count:
+          type: integer
+    GroceryArchiveDetail:
+      allOf:
+        - $ref: "#/components/schemas/GroceryArchiveSummary"
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/GroceryListItem"
+    GroceryArchiveListResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroceryArchiveSummary"
+    GroceryArchiveResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        archived:
+          $ref: "#/components/schemas/GroceryArchiveSummary"
+        current:
+          $ref: "#/components/schemas/GroceryListResponse"
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key

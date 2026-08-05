@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Local runtime artifacts
+*.log
+.env
+.env.*
+!.env.example
+.codex
+scripts/recipe_alt_refresh.sh
+scripts/recipe_alt_refresh.local.sh
+
+# Generated pipeline output
+structured/
+
+# Local-only recipe source files (keep private on your machine / Drive)
+*.docx
+*.gdoc
+
+# Extension-less local recipe docs currently in this folder
+Chicken Piccata with vegetables
+Greek Lemon-Dill Yogurt Sauce
+Neutral Turkey Meatballs
+Spicy Harissa Tomato Sauce
+Turkey Manwich Recipe
