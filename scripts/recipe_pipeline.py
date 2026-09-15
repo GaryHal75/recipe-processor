@@ -410,13 +410,17 @@ def is_candidate(path: Path) -> bool:
 
 
 def read_docx_text(path: Path) -> str:
-    cmd = ["textutil", "-convert", "txt", "-stdout", str(path)]
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        return out.decode("utf-8", errors="replace")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # Fallback for Linux hosts where macOS textutil is unavailable.
         return read_docx_text_fallback(path)
+    except RuntimeError:
+        # Keep textutil as a fallback for unusual DOCX files that do not expose
+        # a readable document.xml structure.
+        cmd = ["textutil", "-convert", "txt", "-stdout", str(path)]
+        try:
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            raise RuntimeError(f"Unable to parse DOCX: {path}") from exc
+        return out.decode("utf-8", errors="replace")
 
 
 def read_docx_text_fallback(path: Path) -> str:
@@ -432,14 +436,43 @@ def read_docx_text_fallback(path: Path) -> str:
         raise RuntimeError(f"Unable to parse DOCX XML: {path}") from exc
 
     ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    lines: list[str] = []
-    for para in root.findall(".//w:p", ns):
-        parts: list[str] = []
-        for text in para.findall(".//w:t", ns):
-            if text.text:
-                parts.append(text.text)
-        if parts:
-            lines.append("".join(parts))
+
+    def paragraph_text(para: ElementTree.Element) -> str:
+        parts = [text.text for text in para.findall(".//w:t", ns) if text.text]
+        if not parts:
+            return ""
+
+        # Word may split one visible line across several runs. Preserve explicit
+        # whitespace, while adding a separator where a line break was only a
+        # visual wrap (as in the sample two-column recipe titles).
+        result = parts[0]
+        for part in parts[1:]:
+            if result.endswith((" ", "\t")) or part.startswith((" ", "\t")):
+                result += part
+            elif part.startswith(tuple(",.;:!?%)]}")):
+                result += part
+            else:
+                result += " " + part
+        return result
+
+    def block_lines(block: ElementTree.Element) -> list[str]:
+        lines: list[str] = []
+        for child in list(block):
+            if child.tag == f"{{{ns['w']}}}p":
+                line = paragraph_text(child)
+                if line:
+                    lines.append(line)
+            elif child.tag == f"{{{ns['w']}}}tbl":
+                # A two-column recipe is commonly a one-row table. Walk cells
+                # left-to-right so their logical content stays sequential.
+                for row in child.findall("./w:tr", ns):
+                    for cell in row.findall("./w:tc", ns):
+                        lines.extend(block_lines(cell))
+
+        return lines
+
+    body = root.find(".//w:body", ns)
+    lines = block_lines(body) if body is not None else []
     return "\n".join(lines)
 
 
@@ -478,15 +511,7 @@ def split_sections(text: str) -> ParseResult:
     servings = None
     total_time = None
 
-    for ln in lines[1:10]:
-        if servings is None:
-            m = re.search(r"\bserves?\b\s*[:\-]?\s*(.+)", ln, re.IGNORECASE)
-            if m:
-                servings = m.group(1).strip()
-        if total_time is None:
-            m = re.search(r"\btotal\s*time\b\s*[:\-]?\s*(.+)", ln, re.IGNORECASE)
-            if m:
-                total_time = m.group(1).strip()
+    servings, total_time = extract_metadata(lines)
 
     idx_ing = find_section_index(lines, ["ingredients", "for the filling", "for the chicken"])
     idx_instr = find_section_index(lines, ["instructions", "steps", "step-by-step", "method", "directions"])
@@ -530,6 +555,39 @@ def find_section_index(lines: list[str], keywords: list[str]) -> int | None:
     return None
 
 
+def extract_metadata(lines: list[str]) -> tuple[str | None, str | None]:
+    servings = None
+    total_time = None
+    metadata_lines = lines[1:10]
+
+    for index, line in enumerate(metadata_lines):
+        serving_match = re.search(
+            r"\b(?:serve|serves|serving|servings)\b\s*[:\-]?\s*(.*?)(?=\btotal\s*time\b|$)",
+            line,
+            re.IGNORECASE,
+        )
+        if servings is None and serving_match:
+            value = serving_match.group(1).strip()
+            if value:
+                servings = value
+            elif index + 1 < len(metadata_lines):
+                next_line = metadata_lines[index + 1].strip()
+                if not re.search(r"\btotal\s*time\b", next_line, re.IGNORECASE):
+                    servings = next_line
+
+        time_match = re.search(r"\btotal\s*time\b\s*[:\-]?\s*(.*)$", line, re.IGNORECASE)
+        if total_time is None and time_match:
+            value = time_match.group(1).strip()
+            if value:
+                total_time = value
+            elif index + 1 < len(metadata_lines):
+                next_line = metadata_lines[index + 1].strip()
+                if not re.search(r"\b(?:serve|serves|serving|servings)\b", next_line, re.IGNORECASE):
+                    total_time = next_line
+
+    return servings, total_time
+
+
 def clean_prefix(line: str) -> str:
     line = re.sub(r"^[\-\*\u2022]\s*", "", line)
     line = re.sub(r"^\d+[\.\)]\s*", "", line)
@@ -554,6 +612,8 @@ def normalize_steps(lines: list[str]) -> list[str]:
         low = ln.lower()
         if low.startswith("tips") or low.startswith("notes") or low.startswith("variations"):
             break
+        if re.match(r"^instructions?\s*[-–—]?\s*continued$", low):
+            continue
         ln = clean_prefix(ln)
         if ln:
             steps.append(ln)

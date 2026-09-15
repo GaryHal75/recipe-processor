@@ -1,9 +1,10 @@
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
-from scripts.recipe_pipeline import is_candidate, split_sections
+from scripts.recipe_pipeline import is_candidate, parse_file, split_sections
 from services.recipe_api import build_store, create_app
 from services.recipe_database import RecipeDatabase
 
@@ -29,6 +30,57 @@ class PipelineRegressionTests(unittest.TestCase):
         )
         self.assertEqual(result.ingredients, ["chicken thighs"])
         self.assertEqual(result.steps, ["Roast the chicken.", "Serve hot."])
+
+    def test_metadata_accepts_servings_and_separate_values(self) -> None:
+        result = split_sections(
+            """Mac and Cheese
+
+            Servings
+            4 generous servings
+            Total Time
+            About 45 minutes
+
+            Ingredients
+            - 1 pound pasta
+
+            Instructions
+            1. Cook the pasta.
+            """
+        )
+        self.assertEqual(result.servings, "4 generous servings")
+        self.assertEqual(result.total_time, "About 45 minutes")
+
+    def test_two_column_docx_table_is_parsed_sequentially(self) -> None:
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p><w:r><w:t>Two Column Pasta</w:t></w:r></w:p>
+            <w:p><w:r><w:t>Servings: </w:t><w:t>2 adults</w:t></w:r></w:p>
+            <w:tbl><w:tr>
+              <w:tc>
+                <w:p><w:r><w:t>Ingredients</w:t></w:r></w:p>
+                <w:p><w:r><w:t>• </w:t><w:t>1 pound pasta</w:t></w:r></w:p>
+              </w:tc>
+              <w:tc>
+                <w:p><w:r><w:t>Instructions</w:t></w:r></w:p>
+                <w:p><w:r><w:t>1. Boil the pasta.</w:t></w:r></w:p>
+                <w:p><w:r><w:t>Instructions - continued</w:t></w:r></w:p>
+                <w:p><w:r><w:t>2. Drain and serve.</w:t></w:r></w:p>
+              </w:tc>
+            </w:tr></w:tbl>
+            <w:sectPr/>
+          </w:body>
+        </w:document>"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "two-column.docx"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+            recipe = parse_file(path, Path(temp_dir))
+
+        self.assertEqual(recipe["title"], "Two Column Pasta")
+        self.assertEqual(recipe["servings"], "2 adults")
+        self.assertEqual(recipe["ingredients"], ["1 pound pasta"])
+        self.assertEqual(recipe["steps"], ["Boil the pasta.", "Drain and serve."])
 
 
 class ApiValidationRegressionTests(unittest.TestCase):

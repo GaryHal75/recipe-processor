@@ -5,10 +5,15 @@ This pipeline converts recipe files in this folder into:
 - `structured/recipes.ndjson` (combined newline-delimited JSON)
 
 It supports:
-- `.docx` (parsed with macOS `textutil`)
+- `.docx` (parsed from Word XML, with macOS `textutil` as fallback)
 - `.txt`, `.md`
 - Extension-less text files
 - `.gdoc` Google Docs stubs (records doc id with a parse warning)
+
+DOCX files may use either a normal single-column flow or a two-column layout
+implemented as a Word table. For the two-column layout, put ingredients in the
+left cell and instructions in the right cell. Both layouts are normalized into
+the same recipe fields.
 
 ## One-time ingest
 
