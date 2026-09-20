@@ -37,7 +37,7 @@ SKIP_FILE_NAMES = {
     "requirements.txt",
 }
 SKIP_SUFFIXES = {".py", ".yaml", ".yml", ".json", ".ndjson", ".sh"}
-PARSER_VERSION = 7
+PARSER_VERSION = 8
 ROLE_KEYWORDS = {
     "main": {
         "chicken",
@@ -191,6 +191,9 @@ class ParseResult:
     title: str
     servings: str | None
     total_time: str | None
+    prep_time: str | None
+    cook_time: str | None
+    time_source: str
     ingredients: list[str]
     steps: list[str]
     notes: list[str]
@@ -502,6 +505,9 @@ def split_sections(text: str) -> ParseResult:
             title="Untitled Recipe",
             servings=None,
             total_time=None,
+            prep_time=None,
+            cook_time=None,
+            time_source="missing",
             ingredients=[],
             steps=[],
             notes=[],
@@ -511,7 +517,10 @@ def split_sections(text: str) -> ParseResult:
     servings = None
     total_time = None
 
-    servings, total_time = extract_metadata(lines)
+    servings, prep_time, cook_time, total_time = extract_metadata(lines)
+    time_source = "explicit" if total_time else "missing"
+    if total_time and total_time.lower() in {"not specified", "n/a", "na", "none", "unknown"}:
+        time_source = "explicit_missing"
 
     idx_ing = find_section_index(lines, ["ingredients", "for the filling", "for the chicken"])
     idx_instr = find_section_index(lines, ["instructions", "steps", "step-by-step", "method", "directions"])
@@ -540,6 +549,9 @@ def split_sections(text: str) -> ParseResult:
         title=title,
         servings=servings,
         total_time=total_time,
+        prep_time=prep_time,
+        cook_time=cook_time,
+        time_source=time_source,
         ingredients=ingredients,
         steps=steps,
         notes=notes[:20],
@@ -555,8 +567,10 @@ def find_section_index(lines: list[str], keywords: list[str]) -> int | None:
     return None
 
 
-def extract_metadata(lines: list[str]) -> tuple[str | None, str | None]:
+def extract_metadata(lines: list[str]) -> tuple[str | None, str | None, str | None, str | None]:
     servings = None
+    prep_time = None
+    cook_time = None
     total_time = None
     metadata_lines = lines[1:10]
 
@@ -585,7 +599,20 @@ def extract_metadata(lines: list[str]) -> tuple[str | None, str | None]:
                 if not re.search(r"\b(?:serve|serves|serving|servings)\b", next_line, re.IGNORECASE):
                     total_time = next_line
 
-    return servings, total_time
+        for label, target in (("prep", "prep_time"), ("cook", "cook_time")):
+            match = re.search(rf"\b{label}\s*time\b\s*[:\-]?\s*(.*)$", line, re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if not value and index + 1 < len(metadata_lines):
+                value = metadata_lines[index + 1].strip()
+            if value and value.lower() not in {"not specified", "n/a", "na", "none", "unknown"}:
+                if target == "prep_time" and prep_time is None:
+                    prep_time = value
+                if target == "cook_time" and cook_time is None:
+                    cook_time = value
+
+    return servings, prep_time, cook_time, total_time
 
 
 def clean_prefix(line: str) -> str:
@@ -656,6 +683,9 @@ def parse_file(path: Path, root: Path) -> dict[str, Any]:
         "title": parsed.title,
         "servings": parsed.servings,
         "total_time_text": parsed.total_time,
+        "prep_time_text": parsed.prep_time,
+        "cook_time_text": parsed.cook_time,
+        "time_source": parsed.time_source,
         "ingredients": parsed.ingredients,
         "steps": parsed.steps,
         "notes": parsed.notes,
