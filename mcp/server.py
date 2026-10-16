@@ -51,6 +51,19 @@ TIMEOUT = float(os.getenv("RECIPES_MCP_TIMEOUT_SECONDS", "15"))
 
 TOOLS = [
     {
+        "name": "list_recipes",
+        "description": "List recipes in the canonical collection. Use this for collection-wide questions, browsing, or comparisons; the default page returns up to 200 recipes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+    },
+    {
         "name": "search_recipes",
         "description": "Search the canonical Recipe Processor dataset by free text.",
         "inputSchema": {
@@ -143,6 +156,7 @@ def arguments_object(arguments: Any) -> dict[str, Any]:
 def call_tool(name: str, raw_arguments: Any) -> Any:
     arguments = arguments_object(raw_arguments)
     allowed = {
+        "list_recipes": {"limit", "offset"},
         "search_recipes": {"query", "limit"},
         "get_recipe": {"recipe_id"},
         "get_grocery_list": set(),
@@ -153,6 +167,15 @@ def call_tool(name: str, raw_arguments: Any) -> Any:
     unexpected = set(arguments) - allowed[name]
     if unexpected:
         raise AdapterError("invalid_request", f"unexpected argument(s): {', '.join(sorted(unexpected))}", 400)
+
+    if name == "list_recipes":
+        limit = arguments.get("limit", 200)
+        offset = arguments.get("offset", 0)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise AdapterError("invalid_request", "limit must be an integer from 1 to 200", 400)
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise AdapterError("invalid_request", "offset must be a non-negative integer", 400)
+        return api_request(f"/recipes?{urlencode({'limit': limit, 'offset': offset})}")
 
     if name == "search_recipes":
         query = arguments.get("query")

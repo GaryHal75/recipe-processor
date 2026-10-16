@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "service_id": "recipe-processor",
+  "repository": {"full_name": "GaryHal75/recipe-processor", "id": 1175725448},
+  "pi_checkout_path": "/home/garygnu/recipe_processor",
+  "runtime_unit": "recipe-api.service",
+  "push_allowed": true
+}
