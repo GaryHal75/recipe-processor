@@ -1,5 +1,15 @@
 # Recipe Processor
 
+## SudoGary integration and readiness
+
+This service owns recipe/grocery persistence and APIs. ChatCore owns the
+conversation and can use the service-owned `mcp/server.py` adapter with
+`APPBOT_RECIPE_TRANSPORT=mcp`; HTTP remains the source default and fallback.
+The system dashboard currently probes `/health` even with MCP selected.
+Explicit adapter-path readiness, parity and broader tool coverage remain in the
+[shared roadmap](../ChatBotCentralCore/docs/SUDOGARY_DESIGN_ALIGNMENT.md).
+Database migration is an active implementation plan, not an obsolete prototype.
+
 Recipe Processor is a standalone local recipe knowledge and grocery-list application.
 
 It turns recipe documents into a searchable structured dataset, then exposes that dataset through a Flask API. The API supports recipe search, meal-component discovery, pairing suggestions, grocery-list workflows, dataset refreshes, and runtime custom instructions for a recipe assistant.
@@ -165,7 +175,9 @@ Each normalized recipe can include:
 - extracted components such as sauces, sides, slaws, and toppings
 - parser warnings when a source file needs review
 
-The generated dataset is designed to support concise recipe summaries, structured actions, and future conversational interfaces without requiring a separate application runtime.
+The generated dataset supports concise summaries and structured actions.
+SudoGary conversation remains in ChatCore; this service provides domain data
+and operations through its API and thin MCP adapter.
 
 ## Configuration
 

@@ -43,7 +43,9 @@ canonical recipe data
 - [ ] Add grocery item update/archive/restore tools only after consequence and
       confirmation behavior is specified.
 - [ ] Decide whether custom recipe instructions belong in the first MCP scope.
-- [ ] Add a service-level MCP health and diagnostics check.
+- [x] Add a safe API health probe to the MCP-configured ChatCore node.
+- [ ] Verify service-level MCP initialization and diagnostics independently
+      from the API health probe.
 - [ ] Add structured correlation IDs from ChatCore through the MCP adapter and
       Recipe API.
 - [ ] Evaluate migration from the hand-written protocol adapter to the official

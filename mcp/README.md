@@ -7,6 +7,7 @@ and returns structured MCP results.
 
 ## Tools
 
+- `list_recipes` — bounded browsing of the canonical collection.
 - `search_recipes` — read-only search of the canonical recipe dataset.
 - `get_recipe` — read-only retrieval by recipe ID.
 - `get_grocery_list` — read-only retrieval of the active grocery list.
@@ -28,7 +29,8 @@ printf '%s\\n' \\
   | .venv/bin/python mcp/server.py
 ```
 
-The adapter is currently launched on demand by an MCP host. It is not yet
-registered with ChatCentralCore; that should be a deliberate next step after
-we decide whether ChatCore should consume MCP internally or expose this as an
-external Sudogary capability.
+ChatCore has an optional registered internal MCP transport selected with
+`APPBOT_RECIPE_TRANSPORT=mcp`; its source default remains HTTP. The host manages
+the stdio process. The monitor uses a separate safe API health probe, which
+does not by itself verify MCP initialization. External assistant access must
+go through the future curated ChatCore gateway, not this adapter directly.

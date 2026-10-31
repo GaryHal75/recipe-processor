@@ -4,7 +4,9 @@ Standalone API service for your normalized recipe dataset.
 
 ## Standalone service
 
-This project runs as an independent Flask application with its own recipe pipeline, SQLite persistence, search, pairing, grocery-list, and assistant-configuration features. It can be used directly by an API client, GPT Action, or future local chatbot without requiring another application to host its core logic.
+This project runs as an independent Flask application with its own recipe pipeline, SQLite persistence, search, pairing, grocery-list, and assistant-configuration features. It remains independently deployable. For SudoGary, assistant requests flow
+through ChatCore and its registered adapter; direct GPT Actions and independent
+chatbots are legacy compatibility uses, not the target conversational path.
 
 ## Environment setup
 
