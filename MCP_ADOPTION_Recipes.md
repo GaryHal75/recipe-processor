@@ -42,6 +42,8 @@ canonical recipe data
 - [ ] Add MCP tools for recipe components and pairing suggestions.
 - [ ] Add grocery item update/archive/restore tools only after consequence and
       confirmation behavior is specified.
+- [x] Add selection-scoped grocery change-set preview/commit tools with stable
+      IDs, revision checks, destructive confirmation, and verification.
 - [ ] Decide whether custom recipe instructions belong in the first MCP scope.
 - [x] Add a safe API health probe to the MCP-configured ChatCore node.
 - [ ] Verify service-level MCP initialization and diagnostics independently
@@ -60,6 +62,8 @@ canonical recipe data
 | `get_recipe` | `GET /recipes/{recipe_id}` | Read | No |
 | `get_grocery_list` | `GET /grocery-list` | Read | No |
 | `append_to_grocery_list` | `POST /grocery-list/append` | Reversible write | Yes in ChatCore |
+| `preview_grocery_change_set` | `POST /grocery-list/change-sets/preview` | Non-persistent proposal | No |
+| `commit_grocery_change_set` | `POST /grocery-list/change-sets/commit` | Approved multi-item edit/removal | Yes in ChatCore |
 
 The MCP adapter should remain thin. New recipe behavior belongs in the Recipe
 Processor service and its HTTP/API contract first; then the MCP and ChatCore

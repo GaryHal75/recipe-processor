@@ -132,6 +132,65 @@ class ApiValidationRegressionTests(unittest.TestCase):
             400,
         )
 
+    def test_selection_scoped_grocery_change_set_previews_commits_and_verifies(self) -> None:
+        auth = {"Authorization": "Bearer test-token"}
+        self.assertEqual(
+            self.client.post(
+                "/grocery-list/append",
+                json={"items": ["salmon", "gold potatoes", "onions", "celery"]},
+                headers=auth,
+            ).status_code,
+            200,
+        )
+        snapshot = self.client.get("/grocery-list", headers=auth).get_json()
+        ids = {row["item"]: row["id"] for row in snapshot["items"]}
+        selected = [ids["salmon"], ids["gold potatoes"], ids["onions"]]
+        preview = self.client.post(
+            "/grocery-list/change-sets/preview",
+            json={
+                "selection": {"entity_ids": selected, "expected_revision": snapshot["revision"]},
+                "changes": [
+                    {"entity_id": ids["salmon"], "expected": {"item": "salmon"}, "fields": {"quantity": 1.5, "unit": "lb"}},
+                    {"entity_id": ids["gold potatoes"], "expected": {"item": "gold potatoes"}, "fields": {"item": "red potatoes"}},
+                    {"entity_id": ids["onions"], "expected": {"item": "onions"}, "fields": {"quantity": 2, "unit": "bags", "description": "pearl onions"}},
+                ],
+            },
+            headers=auth,
+        )
+        self.assertEqual(preview.status_code, 200, preview.get_json())
+        self.assertEqual(self.client.get("/grocery-list", headers=auth).get_json()["revision"], snapshot["revision"])
+        committed = self.client.post(
+            "/grocery-list/change-sets/commit",
+            json={"preview_id": preview.get_json()["preview_id"], "approved": True},
+            headers=auth,
+        )
+        self.assertEqual(committed.status_code, 200, committed.get_json())
+        result = {row["id"]: row for row in committed.get_json()["result"]["items"]}
+        self.assertEqual(result[ids["salmon"]]["quantity"], 1.5)
+        self.assertEqual(result[ids["salmon"]]["unit"], "lb")
+        self.assertEqual(result[ids["gold potatoes"]]["item"], "red potatoes")
+        self.assertEqual(result[ids["onions"]]["description"], "pearl onions")
+        self.assertEqual(result[ids["celery"]]["item"], "celery")
+
+    def test_change_set_rejects_stale_revision_and_requires_destructive_confirmation(self) -> None:
+        auth = {"Authorization": "Bearer test-token"}
+        self.client.post("/grocery-list/append", json={"items": ["milk", "eggs"]}, headers=auth)
+        snapshot = self.client.get("/grocery-list", headers=auth).get_json()
+        milk_id = next(row["id"] for row in snapshot["items"] if row["item"] == "milk")
+        preview = self.client.post(
+            "/grocery-list/change-sets/preview",
+            json={"selection": {"entity_ids": [milk_id], "expected_revision": snapshot["revision"]}, "changes": [{"entity_id": milk_id, "operation": "remove", "expected": {"item": "milk"}}]},
+            headers=auth,
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(self.client.post("/grocery-list/append", json={"items": ["bread"]}, headers=auth).status_code, 200)
+        stale_commit = self.client.post(
+            "/grocery-list/change-sets/commit",
+            json={"preview_id": preview.get_json()["preview_id"], "approved": True, "confirm_destructive": True},
+            headers=auth,
+        )
+        self.assertEqual(stale_commit.status_code, 409)
+
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_recipe_import_is_repeatable_and_replaces_removed_rows(self) -> None:

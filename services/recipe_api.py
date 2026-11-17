@@ -790,6 +790,7 @@ class GroceryListStore:
     by_normalized: dict[str, dict[str, Any]] = None
     started_at_utc: str | None = None
     updated_at_utc: str | None = None
+    revision: str | None = None
 
     def __post_init__(self) -> None:
         self.items = []
@@ -815,7 +816,7 @@ class GroceryListStore:
             )
 
     def load(self) -> None:
-        payload: dict[str, Any] = {"items": [], "started_at_utc": None, "updated_at_utc": None}
+        payload: dict[str, Any] = {"items": [], "started_at_utc": None, "updated_at_utc": None, "revision": None}
         database_payload = self.database.load_grocery_state() if self.database and self.use_database else None
         if database_payload is not None:
             payload = database_payload
@@ -843,6 +844,8 @@ class GroceryListStore:
                 "quantity": row.get("quantity"),
                 "unit": row.get("unit") or None,
                 "category": row.get("category") or None,
+                "description": row.get("description") or None,
+                "notes": row.get("notes") or None,
                 "purchased": bool(row.get("purchased", False)),
             }
             items.append(item)
@@ -854,6 +857,7 @@ class GroceryListStore:
             self.by_normalized = by_normalized
             self.started_at_utc = payload.get("started_at_utc")
             self.updated_at_utc = payload.get("updated_at_utc") or now_iso()
+            self.revision = payload.get("revision") or self.updated_at_utc
         if self.database and self.use_database and database_payload is None:
             self.database.save_grocery_state(payload)
 
@@ -862,6 +866,7 @@ class GroceryListStore:
         payload = {
             "started_at_utc": self.started_at_utc,
             "updated_at_utc": self.updated_at_utc,
+            "revision": self.revision,
             "items": self.items,
         }
         self.file_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
@@ -880,6 +885,7 @@ class GroceryListStore:
                 "started_local_date": started_local_date,
                 "started_local_day": started_local_day,
                 "updated_at_utc": self.updated_at_utc,
+                "revision": self.revision,
                 "age_days": age_days,
                 "stale_after_days": self.stale_after_days,
                 "is_stale": age_days is not None and age_days >= self.stale_after_days,
@@ -905,12 +911,13 @@ class GroceryListStore:
                 item["item"] = item_text
                 item["normalized_item"] = normalized
                 self.by_normalized[normalized] = item
-            for key in ("quantity", "unit", "category", "purchased"):
+            for key in ("quantity", "unit", "category", "description", "notes", "purchased"):
                 if key in changes:
                     item[key] = changes[key]
             item["updated_at_utc"] = now_iso()
             self.items.sort(key=grocery_sort_key, reverse=True)
             self.updated_at_utc = now_iso()
+            self.revision = uuid.uuid4().hex
             self.save()
             self.record_event("item_updated", {"changes": changes}, item_id=item_id, occurred_at_utc=item["updated_at_utc"])
             return {"ok": True, "found": True, "item": summarize_grocery_item(item), **self.get_items()}
@@ -925,9 +932,70 @@ class GroceryListStore:
             self.items = [row for row in self.items if row.get("id") != item_id]
             self.by_normalized.pop(item.get("normalized_item"), None)
             self.updated_at_utc = now_iso()
+            self.revision = uuid.uuid4().hex
             self.save()
             self.record_event("item_removed", {"item": summarize_grocery_item(item)}, item_id=item_id, occurred_at_utc=self.updated_at_utc)
             return {"ok": True, "found": True, "removed": summarize_grocery_item(item), **self.get_items()}
+
+    def apply_change_set(self, changes: list[dict[str, Any]], expected_revision: str) -> dict[str, Any]:
+        """Validate and apply a complete grocery change set under one lock."""
+        with self.lock:
+            if self.database and self.use_database:
+                self.load()
+            if expected_revision != self.revision:
+                raise LookupError("The grocery list changed since the selection was captured.")
+            current = {str(item.get("id")): item for item in self.items}
+            working = {item_id: dict(item) for item_id, item in current.items()}
+            changed: list[dict[str, Any]] = []
+            allowed = {"item", "quantity", "unit", "category", "description", "notes", "purchased"}
+            for change in changes:
+                item_id = change.get("entity_id")
+                operation = change.get("operation", "update")
+                if item_id not in current:
+                    raise LookupError(f"item_id not found in the selected grocery list: {item_id}")
+                if not isinstance(change.get("expected", {}), dict):
+                    raise ValueError("Each change expected value must be an object.")
+                before = dict(working[item_id])
+                for key, expected in change.get("expected", {}).items():
+                    if key not in allowed or before.get(key) != expected:
+                        raise LookupError(f"Selected item {item_id} changed since the preview was created.")
+                if operation == "remove":
+                    working.pop(item_id)
+                    changed.append({"entity_id": item_id, "operation": "remove", "before": summarize_grocery_item(before)})
+                    continue
+                if operation != "update":
+                    raise ValueError("operation must be update or remove.")
+                fields = change.get("fields")
+                if not isinstance(fields, dict) or not fields or set(fields) - allowed:
+                    raise ValueError("Each update must contain only supported editable fields.")
+                after = dict(before)
+                if "item" in fields:
+                    item_text = " ".join(str(fields["item"]).strip().split())
+                    if not item_text:
+                        raise ValueError("item must be a non-empty string.")
+                    after["item"] = item_text
+                    after["normalized_item"] = normalize_grocery_item(item_text)
+                for key, value in fields.items():
+                    if key != "item":
+                        after[key] = value
+                changed.append({"entity_id": item_id, "operation": "update", "before": summarize_grocery_item(before), "after": summarize_grocery_item(after)})
+                working[item_id] = after
+            normalized = {}
+            for item in working.values():
+                key = item["normalized_item"]
+                if key in normalized and normalized[key] != item["id"]:
+                    raise ValueError("The proposed changes would create duplicate grocery items.")
+                normalized[key] = item["id"]
+            for item in working.values():
+                if item["id"] in current and item != current[item["id"]]:
+                    item["updated_at_utc"] = now_iso()
+            self.items = sorted(working.values(), key=grocery_sort_key, reverse=True)
+            self.by_normalized = {item["normalized_item"]: item for item in self.items}
+            self.updated_at_utc = now_iso()
+            self.revision = uuid.uuid4().hex
+            self.save()
+            self.record_event("change_set_committed", {"changes": changed}, occurred_at_utc=self.updated_at_utc)
+            return {"changed": changed, "result": self.get_items()}
 
     def append_items(
         self,
@@ -964,6 +1032,8 @@ class GroceryListStore:
                     "quantity": None,
                     "unit": None,
                     "category": None,
+                    "description": None,
+                    "notes": None,
                     "purchased": False,
                 }
                 self.items.append(item)
@@ -973,6 +1043,7 @@ class GroceryListStore:
 
             self.items.sort(key=grocery_sort_key, reverse=True)
             self.updated_at_utc = now_iso()
+            self.revision = uuid.uuid4().hex
             self.save()
             self.record_event(
                 "items_appended",
@@ -1006,6 +1077,7 @@ class GroceryListStore:
             self.by_normalized = {}
             self.started_at_utc = None
             self.updated_at_utc = now_iso()
+            self.revision = uuid.uuid4().hex
             self.save()
             result = {
                 "ok": True,
@@ -1014,6 +1086,7 @@ class GroceryListStore:
                 "started_local_date": None,
                 "started_local_day": None,
                 "updated_at_utc": self.updated_at_utc,
+                "revision": self.revision,
                 "age_days": None,
                 "stale_after_days": self.stale_after_days,
                 "is_stale": False,
@@ -1059,6 +1132,7 @@ class GroceryListStore:
             self.by_normalized = {}
             self.started_at_utc = None
             self.updated_at_utc = archived_at
+            self.revision = uuid.uuid4().hex
             self.save()
 
         return {
@@ -1070,6 +1144,7 @@ class GroceryListStore:
                 "started_local_date": None,
                 "started_local_day": None,
                 "updated_at_utc": self.updated_at_utc,
+                "revision": self.revision,
                 "age_days": None,
                 "stale_after_days": self.stale_after_days,
                 "is_stale": False,
@@ -1168,6 +1243,8 @@ class GroceryListStore:
                     "quantity": row.get("quantity"),
                     "unit": row.get("unit") or None,
                     "category": row.get("category") or None,
+                    "description": row.get("description") or None,
+                    "notes": row.get("notes") or None,
                     "purchased": bool(row.get("purchased", False)),
                 }
                 restored_items.append(item)
@@ -1176,6 +1253,7 @@ class GroceryListStore:
             self.by_normalized = by_normalized
             self.started_at_utc = payload.get("started_at_utc") or now_iso()
             self.updated_at_utc = now_iso()
+            self.revision = uuid.uuid4().hex
             self.save()
             self.record_event(
                 "list_restored",
@@ -1252,6 +1330,8 @@ def summarize_grocery_item(item: dict[str, Any]) -> dict[str, Any]:
         "quantity": item.get("quantity"),
         "unit": item.get("unit"),
         "category": item.get("category"),
+        "description": item.get("description"),
+        "notes": item.get("notes"),
         "purchased": bool(item.get("purchased", False)),
         "updated_at_utc": item.get("updated_at_utc"),
     }
@@ -1281,6 +1361,8 @@ def create_app(
     app = Flask(__name__)
     instructions_lock = threading.Lock()
     state_database = store.database if store.data_source == "sqlite" else None
+    pending_change_sets: dict[str, dict[str, Any]] = {}
+    pending_change_sets_lock = threading.Lock()
 
     def read_custom_instructions() -> dict[str, Any]:
         with instructions_lock:
@@ -1527,6 +1609,89 @@ def create_app(
     def get_grocery_list() -> Any:
         return jsonify(grocery_store.get_items())
 
+    @app.post("/grocery-list/change-sets/preview")
+    def preview_grocery_change_set() -> Any:
+        body = request.get_json(silent=True) or {}
+        selection = body.get("selection") or {}
+        selected_ids = selection.get("entity_ids")
+        expected_revision = selection.get("expected_revision")
+        changes = body.get("changes")
+        if not isinstance(selected_ids, list) or not selected_ids or len(selected_ids) > 100:
+            abort(400, description="selection.entity_ids must be a non-empty array of at most 100 IDs.")
+        if len(set(selected_ids)) != len(selected_ids) or any(not isinstance(item_id, str) or not item_id for item_id in selected_ids):
+            abort(400, description="selection.entity_ids must contain unique non-empty strings.")
+        if selection.get("parent_id", "active") != "active" or selection.get("entity_type", "grocery_item") != "grocery_item":
+            abort(400, description="Grocery changes must target the active grocery list and grocery_item entities.")
+        if not isinstance(expected_revision, str) or not expected_revision:
+            abort(400, description="selection.expected_revision is required.")
+        if not isinstance(changes, list) or not changes or len(changes) > 100:
+            abort(400, description="changes must be a non-empty array of at most 100 operations.")
+        snapshot = grocery_store.get_items()
+        if snapshot["revision"] != expected_revision:
+            abort(409, description="The grocery list changed since the selection was captured.")
+        current = {item["id"]: item for item in snapshot["items"]}
+        allowed = {"item", "quantity", "unit", "category", "description", "notes", "purchased"}
+        preview_changes = []
+        for change in changes:
+            if not isinstance(change, dict) or change.get("entity_id") not in selected_ids:
+                abort(409, description="Every change must target an entity in the selection snapshot.")
+            entity_id = change["entity_id"]
+            if entity_id not in current:
+                abort(404, description=f"Selected item_id not found: {entity_id}")
+            operation = change.get("operation", "update")
+            expected = change.get("expected", {})
+            if not isinstance(expected, dict):
+                abort(400, description="Each change expected value must be an object.")
+            before = current[entity_id]
+            if any(before.get(key) != value for key, value in expected.items()):
+                abort(409, description=f"Selected item {entity_id} changed since the selection was captured.")
+            if operation == "remove":
+                preview_changes.append({"entity_id": entity_id, "entity_type": "grocery_item", "operation": "remove", "before": before, "after": None, "destructive": True})
+                continue
+            fields = change.get("fields")
+            if operation != "update" or not isinstance(fields, dict) or not fields or set(fields) - allowed:
+                abort(400, description="Each update must contain supported editable fields.")
+            after = dict(before)
+            after.update(fields)
+            if "item" in fields:
+                after["item"] = " ".join(str(fields["item"]).strip().split())
+                after["normalized_item"] = normalize_grocery_item(after["item"])
+            preview_changes.append({"entity_id": entity_id, "entity_type": "grocery_item", "operation": "update", "before": before, "after": after, "changed_fields": sorted(fields)})
+        proposal = {"parent_id": "active", "entity_type": "grocery_item", "selection": {"entity_ids": selected_ids, "expected_revision": expected_revision}, "changes": preview_changes}
+        preview_id = uuid.uuid4().hex
+        with pending_change_sets_lock:
+            pending_change_sets[preview_id] = {"proposal": proposal, "changes": changes}
+        return jsonify({"ok": True, "status": "preview_ready", "preview_id": preview_id, "requires_approval": True, "proposal": proposal})
+
+    @app.post("/grocery-list/change-sets/commit")
+    def commit_grocery_change_set() -> Any:
+        body = request.get_json(silent=True) or {}
+        preview_id = body.get("preview_id")
+        if not isinstance(preview_id, str) or not preview_id:
+            abort(400, description="preview_id is required.")
+        if body.get("approved") is not True:
+            abort(400, description="approved must be true to commit a proposed change set.")
+        with pending_change_sets_lock:
+            pending = pending_change_sets.get(preview_id)
+        if not pending:
+            abort(409, description="The proposed change set is unknown, already committed, or expired.")
+        proposal = pending["proposal"]
+        if any(change.get("operation") == "remove" for change in proposal["changes"]) and body.get("confirm_destructive") is not True:
+            abort(400, description="confirm_destructive must be true for removals.")
+        with pending_change_sets_lock:
+            pending_change_sets.pop(preview_id, None)
+        try:
+            applied = grocery_store.apply_change_set(pending["changes"], proposal["selection"]["expected_revision"])
+        except LookupError as exc:
+            abort(409, description=str(exc))
+        except ValueError as exc:
+            abort(400, description=str(exc))
+        verified = grocery_store.get_items()
+        changed_ids = {change["entity_id"] for change in proposal["changes"]}
+        actual = {item["id"]: item for item in verified["items"]}
+        verification = {"status": "confirmed_success", "revision": verified["revision"], "changed_ids": sorted(changed_ids), "all_targets_present_or_removed": all(change["operation"] == "remove" and change["entity_id"] not in actual or change["operation"] == "update" and change["entity_id"] in actual for change in proposal["changes"])}
+        return jsonify({"ok": True, "status": "committed", "proposal": proposal, "applied": applied["changed"], "result": verified, "verification": verification})
+
     @app.delete("/grocery-list")
     def clear_grocery_list() -> Any:
         return jsonify(grocery_store.clear())
@@ -1534,7 +1699,7 @@ def create_app(
     @app.patch("/grocery-list/items/<item_id>")
     def update_grocery_item(item_id: str) -> Any:
         body = request.get_json(silent=True) or {}
-        allowed = {"item", "quantity", "unit", "category", "purchased"}
+        allowed = {"item", "quantity", "unit", "category", "description", "notes", "purchased"}
         changes = {key: body[key] for key in allowed if key in body}
         if not changes:
             abort(400, description="Request JSON must include at least one editable item field.")

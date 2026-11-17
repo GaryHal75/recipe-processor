@@ -109,6 +109,31 @@ TOOLS = [
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
     },
+    {
+        "name": "preview_grocery_change_set",
+        "description": "Validate a selection-scoped grocery edit and return a before/after preview. This never persists changes. Selection IDs and the expected revision are authoritative.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selection": {"type": "object", "properties": {"parent_id": {"type": "string", "default": "active"}, "entity_type": {"type": "string", "default": "grocery_item"}, "entity_ids": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,160}$"}, "minItems": 1, "maxItems": 100}, "expected_revision": {"type": "string", "minLength": 1}}, "required": ["entity_ids", "expected_revision"], "additionalProperties": False},
+                "changes": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "object", "properties": {"entity_id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,160}$"}, "operation": {"type": "string", "enum": ["update", "remove"]}, "fields": {"type": "object"}, "expected": {"type": "object"}}, "required": ["entity_id"], "additionalProperties": False}},
+            },
+            "required": ["selection", "changes"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "commit_grocery_change_set",
+        "description": "Commit exactly one previously previewed grocery change set after explicit user approval. Set confirm_destructive=true when the preview removes items. Returns read-after-write verification.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"preview_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"}, "approved": {"type": "boolean"}, "confirm_destructive": {"type": "boolean", "default": False}},
+            "required": ["preview_id", "approved"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False},
+    },
 ]
 
 
@@ -137,7 +162,7 @@ def api_request(path: str, method: str = "GET", payload: dict[str, Any] | None =
             detail = json.loads(exc.read().decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             detail = {"message": exc.reason}
-        code = "unauthorized" if exc.code in (401, 403) else "not_found" if exc.code == 404 else "api_error"
+        code = "unauthorized" if exc.code in (401, 403) else "not_found" if exc.code == 404 else "conflict" if exc.code == 409 else "invalid_request" if exc.code == 400 else "api_error"
         raise AdapterError(code, detail.get("message", f"Recipe API returned HTTP {exc.code}"), exc.code) from exc
     except (URLError, TimeoutError) as exc:
         raise AdapterError("upstream_unavailable", "Recipe API is unavailable", 503) from exc
@@ -161,6 +186,8 @@ def call_tool(name: str, raw_arguments: Any) -> Any:
         "get_recipe": {"recipe_id"},
         "get_grocery_list": set(),
         "append_to_grocery_list": {"items", "recipe_ids", "source"},
+        "preview_grocery_change_set": {"selection", "changes"},
+        "commit_grocery_change_set": {"preview_id", "approved", "confirm_destructive"},
     }
     if name not in allowed:
         raise AdapterError("unknown_tool", f"unknown tool: {name}", 404)
@@ -194,6 +221,35 @@ def call_tool(name: str, raw_arguments: Any) -> Any:
 
     if name == "get_grocery_list":
         return api_request("/grocery-list")
+
+    if name == "preview_grocery_change_set":
+        selection = arguments.get("selection")
+        changes = arguments.get("changes")
+        if not isinstance(selection, dict) or not isinstance(changes, list) or not changes:
+            raise AdapterError("invalid_request", "selection and a non-empty changes array are required", 400)
+        ids = selection.get("entity_ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 100 or len(set(ids)) != len(ids) or any(not isinstance(item_id, str) or not ID_PATTERN.fullmatch(item_id) for item_id in ids):
+            raise AdapterError("invalid_request", "selection.entity_ids must contain unique valid IDs", 400)
+        if not isinstance(selection.get("expected_revision"), str) or not selection["expected_revision"]:
+            raise AdapterError("invalid_request", "selection.expected_revision is required", 400)
+        for change in changes:
+            if not isinstance(change, dict) or not isinstance(change.get("entity_id"), str) or not ID_PATTERN.fullmatch(change["entity_id"]):
+                raise AdapterError("invalid_request", "each change requires a valid entity_id", 400)
+            if change["entity_id"] not in ids:
+                raise AdapterError("invalid_request", "changes may target only selected entity IDs", 400)
+        return api_request("/grocery-list/change-sets/preview", "POST", {"selection": selection, "changes": changes})
+
+    if name == "commit_grocery_change_set":
+        preview_id = arguments.get("preview_id")
+        approved = arguments.get("approved")
+        confirm_destructive = arguments.get("confirm_destructive", False)
+        if not isinstance(preview_id, str) or not re.fullmatch(r"[a-f0-9]{32}", preview_id):
+            raise AdapterError("invalid_request", "preview_id must be a valid preview identifier", 400)
+        if approved is not True:
+            raise AdapterError("invalid_request", "approved must be true", 400)
+        if not isinstance(confirm_destructive, bool):
+            raise AdapterError("invalid_request", "confirm_destructive must be boolean", 400)
+        return api_request("/grocery-list/change-sets/commit", "POST", {"preview_id": preview_id, "approved": approved, "confirm_destructive": confirm_destructive})
 
     items = arguments.get("items")
     recipe_ids = arguments.get("recipe_ids", [])

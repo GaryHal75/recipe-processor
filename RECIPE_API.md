@@ -54,6 +54,8 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 - `POST /reload` (reloads `structured/recipes.ndjson`)
 - `POST /ingest` (runs `scripts/recipe_pipeline.py`, then reloads)
 - `GET /grocery-list`
+- `POST /grocery-list/change-sets/preview` with an explicit selection snapshot and proposed per-item changes
+- `POST /grocery-list/change-sets/commit` with a single-use preview ID and explicit approval
 - `PATCH /grocery-list/items/<item_id>` to edit an item
 - `DELETE /grocery-list/items/<item_id>` to remove an item from the active list
 - `POST /grocery-list/append` with JSON body like `{"items":["milk","yellow onion"],"recipe_ids":["shrimp_roasted_poblano_cream_pasta"],"skip_recipe_ids":["hello_fresh_recipe_id"],"source":"chat"}`
@@ -67,6 +69,16 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 The active grocery list includes `started_at_utc`, `started_local_date`, `started_local_day`, `age_days`, `stale_after_days`, and `is_stale`. The default stale threshold is 7 days and can be changed with `RECIPE_GROCERY_STALE_DAYS`. Clearing a non-empty list archives a `cleared` snapshot before resetting the active cart. SQLite-backed archives can be soft-deleted and retrieved explicitly with `?include_deleted=true`.
 
 Recipe-based grocery-list append requests validate every requested recipe before changing the cart. Append responses include `stale_before_append` plus the existing cart's creation date and weekday, allowing a chatbot to warn before merging new ingredients into an old list. SQLite-backed deployments also retain grocery events for future usage, purchasing, and inventory analysis.
+
+Selection-scoped grocery editing uses stable item IDs and a `revision` returned
+by `GET /grocery-list`. The preview request must include
+`selection: {entity_type: "grocery_item", parent_id: "active", entity_ids,
+expected_revision}` and a non-empty `changes` array. Each change names one
+selected `entity_id`, an `operation` (`update` or `remove`), expected prior
+values, and explicit update fields. Preview is non-persistent. Commit requires
+the returned `preview_id` plus `approved: true`; removals also require
+`confirm_destructive: true`. Commit returns authoritative read-after-write
+verification and rejects stale revisions with HTTP 409.
 
 Create a consistent SQLite backup with:
 

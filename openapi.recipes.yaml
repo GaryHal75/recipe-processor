@@ -226,6 +226,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GroceryListResponse"
+  /grocery-list/change-sets/preview:
+    post:
+      operationId: previewGroceryChangeSet
+      summary: Validate and preview a selection-scoped grocery change set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroceryChangeSetPreviewRequest"
+      responses:
+        "200":
+          description: Proposed before-and-after changes; no persistence
+        "409":
+          description: Stale selection or out-of-scope target
+  /grocery-list/change-sets/commit:
+    post:
+      operationId: commitGroceryChangeSet
+      summary: Commit an approved grocery change-set preview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroceryChangeSetCommitRequest"
+      responses:
+        "200":
+          description: Committed change set with read-after-write verification
+        "409":
+          description: Stale revision, unknown preview, or concurrent change
   /grocery-list/items/{item_id}:
     patch:
       operationId: updateGroceryItem
@@ -705,6 +735,12 @@ components:
         category:
           type: string
           nullable: true
+        description:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
         purchased:
           type: boolean
         updated_at_utc:
@@ -714,6 +750,8 @@ components:
     GroceryListResponse:
       type: object
       properties:
+        revision:
+          type: string
         count:
           type: integer
         started_at_utc:
@@ -795,8 +833,66 @@ components:
         category:
           type: string
           nullable: true
+        description:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
         purchased:
           type: boolean
+      additionalProperties: false
+    GroceryChangeSetPreviewRequest:
+      type: object
+      required: [selection, changes]
+      properties:
+        selection:
+          type: object
+          required: [entity_ids, expected_revision]
+          properties:
+            parent_id:
+              type: string
+              default: active
+            entity_type:
+              type: string
+              default: grocery_item
+            entity_ids:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: string
+            expected_revision:
+              type: string
+        changes:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [entity_id]
+            properties:
+              entity_id:
+                type: string
+              operation:
+                type: string
+                enum: [update, remove]
+              expected:
+                type: object
+              fields:
+                type: object
+      additionalProperties: false
+    GroceryChangeSetCommitRequest:
+      type: object
+      required: [preview_id, approved]
+      properties:
+        preview_id:
+          type: string
+        approved:
+          type: boolean
+        confirm_destructive:
+          type: boolean
+          default: false
       additionalProperties: false
     GroceryItemUpdateResponse:
       allOf:
