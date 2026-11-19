@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hmac
 import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -786,6 +789,8 @@ class GroceryListStore:
     use_database: bool = False
     stale_after_days: int = DEFAULT_GROCERY_STALE_DAYS
     lock: threading.RLock = field(default_factory=threading.RLock)
+    _process_lock_guard: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    _process_lock_state: threading.local = field(default_factory=threading.local, repr=False)
     items: list[dict[str, Any]] = None
     by_normalized: dict[str, dict[str, Any]] = None
     started_at_utc: str | None = None
@@ -869,12 +874,59 @@ class GroceryListStore:
             "revision": self.revision,
             "items": self.items,
         }
-        self.file_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.file_path.parent, prefix=f".{self.file_path.name}.", suffix=".tmp", delete=False) as temp:
+            temp.write(json.dumps(payload, indent=2, ensure_ascii=True))
+            temp.flush()
+            os.fsync(temp.fileno())
+            temp_path = Path(temp.name)
+        os.replace(temp_path, self.file_path)
         if self.database and self.use_database:
             self.database.save_grocery_state(payload)
 
+    @contextmanager
+    def process_lock(self):
+        # flock coordinates workers, while the thread-local depth makes nested
+        # store operations (for example clear -> archive_current) reentrant.
+        with self._process_lock_guard:
+            depth = getattr(self._process_lock_state, "depth", 0)
+            if depth:
+                self._process_lock_state.depth = depth + 1
+                try:
+                    yield
+                finally:
+                    self._process_lock_state.depth -= 1
+                return
+
+        lock_path = self.file_path.with_name(f".{self.file_path.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            self._process_lock_state.depth = 1
+            try:
+                yield
+            finally:
+                self._process_lock_state.depth = 0
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def save_change_set(self, preview_id: str, proposal: dict[str, Any], changes: list[dict[str, Any]]) -> None:
+        if self.database:
+            self.database.save_grocery_change_set(preview_id, proposal, changes, now_iso())
+
+    def get_change_set(self, preview_id: str) -> dict[str, Any] | None:
+        return self.database.get_grocery_change_set(preview_id) if self.database else None
+
+    def claim_change_set(self, preview_id: str) -> dict[str, Any] | None:
+        return self.database.claim_grocery_change_set(preview_id) if self.database else None
+
+    def finish_change_set(self, preview_id: str, status: str, result: dict[str, Any]) -> None:
+        if self.database:
+            self.database.finish_grocery_change_set(preview_id, status, result, now_iso())
+
     def get_items(self) -> dict[str, Any]:
-        if self.database and self.use_database:
+        # Gunicorn workers keep one GroceryListStore instance each.  For the
+        # production NDJSON-backed list, reload the atomic authoritative file
+        # on every read so a read routed to another worker observes a commit.
+        if self.file_path.exists() or (self.database and self.use_database):
             self.load()
         with self.lock:
             started_local_date, started_local_day = local_date_parts(self.started_at_utc)
@@ -893,9 +945,8 @@ class GroceryListStore:
             }
 
     def update_item(self, item_id: str, changes: dict[str, Any]) -> dict[str, Any]:
-        with self.lock:
-            if self.database and self.use_database:
-                self.load()
+        with self.process_lock(), self.lock:
+            self.load()
             item = next((row for row in self.items if row.get("id") == item_id), None)
             if not item:
                 return {"ok": False, "found": False}
@@ -923,9 +974,8 @@ class GroceryListStore:
             return {"ok": True, "found": True, "item": summarize_grocery_item(item), **self.get_items()}
 
     def remove_item(self, item_id: str) -> dict[str, Any]:
-        with self.lock:
-            if self.database and self.use_database:
-                self.load()
+        with self.process_lock(), self.lock:
+            self.load()
             item = next((row for row in self.items if row.get("id") == item_id), None)
             if not item:
                 return {"ok": False, "found": False}
@@ -939,7 +989,8 @@ class GroceryListStore:
 
     def apply_change_set(self, changes: list[dict[str, Any]], expected_revision: str) -> dict[str, Any]:
         """Validate and apply a complete grocery change set under one lock."""
-        with self.lock:
+        with self.process_lock(), self.lock:
+            self.load()
             if self.database and self.use_database:
                 self.load()
             if expected_revision != self.revision:
@@ -1008,9 +1059,8 @@ class GroceryListStore:
         added = 0
         duplicates = 0
         added_items: list[dict[str, Any]] = []
-        with self.lock:
-            if self.database and self.use_database:
-                self.load()
+        with self.process_lock(), self.lock:
+            self.load()
             if self.started_at_utc is None:
                 self.started_at_utc = now_iso()
             for raw in items:
@@ -1067,9 +1117,8 @@ class GroceryListStore:
             }
 
     def clear(self) -> dict[str, Any]:
-        with self.lock:
-            if self.database and self.use_database:
-                self.load()
+        with self.process_lock(), self.lock:
+            self.load()
             archived = None
             if self.items:
                 archived = self.archive_current(name="Cleared grocery list", status="cleared")["archived"]
@@ -1097,9 +1146,8 @@ class GroceryListStore:
             return result
 
     def archive_current(self, name: str | None = None, status: str = "archived") -> dict[str, Any]:
-        with self.lock:
-            if self.database and self.use_database:
-                self.load()
+        with self.process_lock(), self.lock:
+            self.load()
             archive_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
             archive_name = " ".join((name or "").strip().split()) or None
             archived_at = now_iso()
@@ -1218,7 +1266,7 @@ class GroceryListStore:
     def restore_archive(self, archive_id: str) -> dict[str, Any]:
         if not self.database or not self.use_database:
             return {"ok": False, "reason": "sqlite_required"}
-        with self.lock:
+        with self.process_lock(), self.lock:
             self.load()
             if self.items:
                 return {"ok": False, "reason": "active_list_not_empty"}
@@ -1628,14 +1676,18 @@ def create_app(
             abort(400, description="changes must be a non-empty array of at most 100 operations.")
         snapshot = grocery_store.get_items()
         if snapshot["revision"] != expected_revision:
-            abort(409, description="The grocery list changed since the selection was captured.")
+            return jsonify({"ok": False, "status": "revision_conflict", "error": "revision_conflict", "expected_revision": expected_revision, "current_revision": snapshot["revision"], "action": "refresh_and_repreview"}), 409
         current = {item["id"]: item for item in snapshot["items"]}
         allowed = {"item", "quantity", "unit", "category", "description", "notes", "purchased"}
         preview_changes = []
+        seen_entity_ids: set[str] = set()
         for change in changes:
             if not isinstance(change, dict) or change.get("entity_id") not in selected_ids:
                 abort(409, description="Every change must target an entity in the selection snapshot.")
             entity_id = change["entity_id"]
+            if entity_id in seen_entity_ids:
+                return jsonify({"ok": False, "status": "duplicate_entity_id", "error": "duplicate_entity_id", "message": f"entity_id may appear only once per change set: {entity_id}"}), 400
+            seen_entity_ids.add(entity_id)
             if entity_id not in current:
                 abort(404, description=f"Selected item_id not found: {entity_id}")
             operation = change.get("operation", "update")
@@ -1659,8 +1711,11 @@ def create_app(
             preview_changes.append({"entity_id": entity_id, "entity_type": "grocery_item", "operation": "update", "before": before, "after": after, "changed_fields": sorted(fields)})
         proposal = {"parent_id": "active", "entity_type": "grocery_item", "selection": {"entity_ids": selected_ids, "expected_revision": expected_revision}, "changes": preview_changes}
         preview_id = uuid.uuid4().hex
-        with pending_change_sets_lock:
-            pending_change_sets[preview_id] = {"proposal": proposal, "changes": changes}
+        if grocery_store.database:
+            grocery_store.save_change_set(preview_id, proposal, changes)
+        else:
+            with pending_change_sets_lock:
+                pending_change_sets[preview_id] = {"proposal": proposal, "changes": changes, "status": "pending"}
         return jsonify({"ok": True, "status": "preview_ready", "preview_id": preview_id, "requires_approval": True, "proposal": proposal})
 
     @app.post("/grocery-list/change-sets/commit")
@@ -1671,26 +1726,56 @@ def create_app(
             abort(400, description="preview_id is required.")
         if body.get("approved") is not True:
             abort(400, description="approved must be true to commit a proposed change set.")
-        with pending_change_sets_lock:
-            pending = pending_change_sets.get(preview_id)
+        pending = grocery_store.get_change_set(preview_id) if grocery_store.database else None
+        if pending and pending.get("status") == "committed" and pending.get("result"):
+            return jsonify({**pending["result"], "replayed": True})
+        if pending and pending.get("status") == "failed" and pending.get("result"):
+            failure = pending["result"]
+            return jsonify({**failure, "replayed": True}), int(failure.get("http_status", 409))
+        if pending and pending.get("status") == "committing":
+            return jsonify({"ok": False, "status": "outcome_unknown", "error": "outcome_unknown", "preview_id": preview_id, "action": "get_grocery_operation_status"}), 409
+        if not grocery_store.database:
+            with pending_change_sets_lock:
+                pending = pending_change_sets.get(preview_id)
         if not pending:
             abort(409, description="The proposed change set is unknown, already committed, or expired.")
         proposal = pending["proposal"]
         if any(change.get("operation") == "remove" for change in proposal["changes"]) and body.get("confirm_destructive") is not True:
             abort(400, description="confirm_destructive must be true for removals.")
-        with pending_change_sets_lock:
-            pending_change_sets.pop(preview_id, None)
+        if grocery_store.database:
+            claimed = grocery_store.claim_change_set(preview_id)
+            if not claimed:
+                current = grocery_store.get_change_set(preview_id)
+                if current and current.get("result"):
+                    return jsonify({**current["result"], "replayed": True})
+                return jsonify({"ok": False, "status": "outcome_unknown", "error": "outcome_unknown", "preview_id": preview_id, "action": "get_grocery_operation_status"}), 409
+            pending = claimed
+        else:
+            with pending_change_sets_lock:
+                pending_change_sets.pop(preview_id, None)
         try:
+            current_before = grocery_store.get_items()
+            expected_revision = proposal["selection"]["expected_revision"]
+            if current_before["revision"] != expected_revision:
+                result = {"ok": False, "status": "revision_conflict", "error": "revision_conflict", "preview_id": preview_id, "expected_revision": expected_revision, "current_revision": current_before["revision"], "action": "refresh_and_repreview", "http_status": 409}
+                grocery_store.finish_change_set(preview_id, "failed", result)
+                return jsonify(result), 409
             applied = grocery_store.apply_change_set(pending["changes"], proposal["selection"]["expected_revision"])
         except LookupError as exc:
-            abort(409, description=str(exc))
+            result = {"ok": False, "status": "validation_failed", "error": "validation_failed", "preview_id": preview_id, "message": str(exc), "http_status": 409}
+            grocery_store.finish_change_set(preview_id, "failed", result)
+            return jsonify(result), 409
         except ValueError as exc:
-            abort(400, description=str(exc))
+            result = {"ok": False, "status": "validation_failed", "error": "validation_failed", "preview_id": preview_id, "message": str(exc), "http_status": 400}
+            grocery_store.finish_change_set(preview_id, "failed", result)
+            return jsonify(result), 400
         verified = grocery_store.get_items()
         changed_ids = {change["entity_id"] for change in proposal["changes"]}
         actual = {item["id"]: item for item in verified["items"]}
         verification = {"status": "confirmed_success", "revision": verified["revision"], "changed_ids": sorted(changed_ids), "all_targets_present_or_removed": all(change["operation"] == "remove" and change["entity_id"] not in actual or change["operation"] == "update" and change["entity_id"] in actual for change in proposal["changes"])}
-        return jsonify({"ok": True, "status": "committed", "proposal": proposal, "applied": applied["changed"], "result": verified, "verification": verification})
+        response = {"ok": True, "status": "committed", "proposal": proposal, "applied": applied["changed"], "result": verified, "verification": verification}
+        grocery_store.finish_change_set(preview_id, "committed", response)
+        return jsonify(response)
 
     @app.delete("/grocery-list")
     def clear_grocery_list() -> Any:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recipes (
@@ -80,6 +80,16 @@ CREATE TABLE IF NOT EXISTS grocery_events (
 
 CREATE INDEX IF NOT EXISTS idx_grocery_events_occurred_at ON grocery_events(occurred_at_utc);
 CREATE INDEX IF NOT EXISTS idx_grocery_events_type ON grocery_events(event_type);
+
+CREATE TABLE IF NOT EXISTS grocery_change_sets (
+    preview_id TEXT PRIMARY KEY,
+    proposal_json TEXT NOT NULL,
+    changes_json TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    finished_at_utc TEXT,
+    result_json TEXT
+);
 """
 
 
@@ -274,6 +284,43 @@ class RecipeDatabase:
                 "INSERT INTO grocery_state(key, value_json) VALUES('current', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
                 (_json(payload),),
+            )
+
+    def save_grocery_change_set(self, preview_id: str, proposal: dict[str, Any], changes: list[dict[str, Any]], created_at_utc: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO grocery_change_sets(preview_id, proposal_json, changes_json, created_at_utc, status, finished_at_utc, result_json) VALUES (?, ?, ?, ?, 'pending', NULL, NULL)",
+                (preview_id, _json(proposal), _json(changes), created_at_utc),
+            )
+
+    def get_grocery_change_set(self, preview_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM grocery_change_sets WHERE preview_id = ?", (preview_id,)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["proposal"] = json.loads(result.pop("proposal_json"))
+        result["changes"] = json.loads(result.pop("changes_json"))
+        result["result"] = json.loads(result.pop("result_json")) if result.get("result_json") else None
+        return result
+
+    def claim_grocery_change_set(self, preview_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            cursor = connection.execute("UPDATE grocery_change_sets SET status = 'committing' WHERE preview_id = ? AND status = 'pending'", (preview_id,))
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute("SELECT * FROM grocery_change_sets WHERE preview_id = ?", (preview_id,)).fetchone()
+        result = dict(row)
+        result["proposal"] = json.loads(result.pop("proposal_json"))
+        result["changes"] = json.loads(result.pop("changes_json"))
+        result["result"] = json.loads(result.pop("result_json")) if result.get("result_json") else None
+        return result
+
+    def finish_grocery_change_set(self, preview_id: str, status: str, result: dict[str, Any], finished_at_utc: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE grocery_change_sets SET status = ?, finished_at_utc = ?, result_json = ? WHERE preview_id = ?",
+                (status, finished_at_utc, _json(result), preview_id),
             )
 
     def save_grocery_archive(self, payload: dict[str, Any]) -> None:

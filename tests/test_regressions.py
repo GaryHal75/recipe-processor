@@ -192,7 +192,62 @@ class ApiValidationRegressionTests(unittest.TestCase):
         self.assertEqual(stale_commit.status_code, 409)
 
 
+    def test_change_set_rejects_duplicate_entity_ids_without_persisting_preview(self) -> None:
+        auth = {"Authorization": "Bearer test-token"}
+        self.assertEqual(self.client.post("/grocery-list/append", json={"items": ["duplicate target"]}, headers=auth).status_code, 200)
+        snapshot = self.client.get("/grocery-list", headers=auth).get_json()
+        item_id = snapshot["items"][0]["id"]
+        duplicate_cases = [
+            [
+                {"entity_id": item_id, "expected": {"item": "duplicate target"}, "fields": {"quantity": 1}},
+                {"entity_id": item_id, "expected": {"item": "duplicate target"}, "fields": {"unit": "box"}},
+            ],
+            [
+                {"entity_id": item_id, "expected": {"item": "duplicate target"}, "fields": {"quantity": 1}},
+                {"entity_id": item_id, "expected": {"item": "duplicate target"}, "fields": {"quantity": 1}},
+            ],
+            [
+                {"entity_id": item_id, "expected": {"item": "duplicate target"}, "fields": {"purchased": True}},
+                {"entity_id": item_id, "operation": "remove", "expected": {"item": "duplicate target"}},
+            ],
+        ]
+        for changes in duplicate_cases:
+            response = self.client.post("/grocery-list/change-sets/preview", json={"selection": {"entity_ids": [item_id], "expected_revision": snapshot["revision"]}, "changes": changes}, headers=auth)
+            self.assertEqual(response.status_code, 400, response.get_json())
+            self.assertEqual(response.get_json()["error"], "duplicate_entity_id")
+            self.assertNotIn("preview_id", response.get_json())
+        self.assertEqual(self.client.get("/grocery-list", headers=auth).get_json()["revision"], snapshot["revision"])
+
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_change_set_preview_survives_multiple_api_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            structured = root / "structured"
+            structured.mkdir()
+            ndjson = structured / "recipes.ndjson"
+            ndjson.write_text(json.dumps({"recipe_id": "worker_recipe", "title": "Worker Recipe"}) + "\n", encoding="utf-8")
+            source = root / "source"
+            source.mkdir()
+            database_path = structured / "recipes.db"
+            kwargs = dict(dataset=str(ndjson), source=str(source), out=str(structured), pipeline_script=str(Path.cwd() / "scripts/recipe_pipeline.py"), grocery_list=str(root / "grocery.json"), grocery_archive_dir=str(root / "archives"), database=str(database_path), data_source="ndjson")
+            store_one, grocery_one = build_store(**kwargs)
+            client_one = create_app(store=store_one, grocery_store=grocery_one, api_key=None, custom_instructions_path=root / "one.md", bearer_token="test-token").test_client()
+            auth = {"Authorization": "Bearer test-token"}
+            client_one.post("/grocery-list/append", json={"items": ["worker item"]}, headers=auth)
+            snapshot = client_one.get("/grocery-list", headers=auth).get_json()
+            item_id = snapshot["items"][0]["id"]
+            preview = client_one.post("/grocery-list/change-sets/preview", json={"selection": {"entity_ids": [item_id], "expected_revision": snapshot["revision"]}, "changes": [{"entity_id": item_id, "expected": {"item": "worker item"}, "fields": {"quantity": 2}}]}, headers=auth)
+            self.assertEqual(preview.status_code, 200, preview.get_json())
+            store_two, grocery_two = build_store(**kwargs)
+            client_two = create_app(store=store_two, grocery_store=grocery_two, api_key=None, custom_instructions_path=root / "two.md", bearer_token="test-token").test_client()
+            committed = client_two.post("/grocery-list/change-sets/commit", json={"preview_id": preview.get_json()["preview_id"], "approved": True}, headers=auth)
+            self.assertEqual(committed.status_code, 200, committed.get_json())
+            self.assertEqual(committed.get_json()["result"]["items"][0]["quantity"], 2)
+            reread = client_one.get("/grocery-list", headers=auth)
+            self.assertEqual(reread.status_code, 200, reread.get_json())
+            self.assertEqual(reread.get_json()["revision"], committed.get_json()["result"]["revision"])
+            self.assertEqual(reread.get_json()["items"][0]["quantity"], 2)
+
     def test_recipe_import_is_repeatable_and_replaces_removed_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database = RecipeDatabase(Path(temp_dir) / "recipes.db")

@@ -162,7 +162,7 @@ def api_request(path: str, method: str = "GET", payload: dict[str, Any] | None =
             detail = json.loads(exc.read().decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             detail = {"message": exc.reason}
-        code = "unauthorized" if exc.code in (401, 403) else "not_found" if exc.code == 404 else "conflict" if exc.code == 409 else "invalid_request" if exc.code == 400 else "api_error"
+        code = detail.get("error") if isinstance(detail, dict) and isinstance(detail.get("error"), str) else ("unauthorized" if exc.code in (401, 403) else "not_found" if exc.code == 404 else "conflict" if exc.code == 409 else "invalid_request" if exc.code == 400 else "api_error")
         raise AdapterError(code, detail.get("message", f"Recipe API returned HTTP {exc.code}"), exc.code) from exc
     except (URLError, TimeoutError) as exc:
         raise AdapterError("upstream_unavailable", "Recipe API is unavailable", 503) from exc
